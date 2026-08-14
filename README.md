@@ -45,7 +45,7 @@ Want QuickShot to start when your Mac starts? System Settings > General > Login 
 
 ## Why
 
-I used Lightshot for years, but on a multi-monitor setup it takes a second or two before you can even start selecting. That delay, hundreds of times a day, adds up. QuickShot does the two things I actually used (red arrows and red boxes on a region of the screen) and does them instantly.
+Every screenshot tool I tried either lags the moment you plug in a second monitor or buries screen recording under a pile of settings. You point at things and you record things hundreds of times a day; that should cost zero seconds and zero clicks of setup. QuickShot does exactly those two things, the instant you press the key.
 
 ## How it works
 
