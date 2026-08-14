@@ -1,7 +1,7 @@
 import Cocoa
-import Carbon.HIToolbox
 import ScreenCaptureKit
 import UniformTypeIdentifiers
+import ApplicationServices
 
 // MARK: - Annotations
 
@@ -580,14 +580,65 @@ final class CaptureSession {
     }
 }
 
+// MARK: - Hotkey (fn+ctrl via event tap, since Carbon hotkeys can't see fn)
+
+final class FnCtrlHotKey {
+    private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
+    private var comboDown = false
+    private let onTrigger: () -> Void
+
+    var isActive: Bool { tap != nil }
+
+    init(onTrigger: @escaping () -> Void) {
+        self.onTrigger = onTrigger
+
+        let mask = 1 << CGEventType.flagsChanged.rawValue
+        let callback: CGEventTapCallBack = { _, type, event, userInfo in
+            let hotKey = Unmanaged<FnCtrlHotKey>.fromOpaque(userInfo!).takeUnretainedValue()
+            hotKey.handle(type: type, event: event)
+            return Unmanaged.passUnretained(event)
+        }
+        tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .listenOnly,
+            eventsOfInterest: CGEventMask(mask),
+            callback: callback,
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        )
+        guard let tap else { return }
+        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        source = runLoopSource
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private func handle(type: CGEventType, event: CGEvent) {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            return
+        }
+        guard type == .flagsChanged else { return }
+        let flags = event.flags
+        let active = flags.contains(.maskSecondaryFn) && flags.contains(.maskControl)
+        if active && !comboDown {
+            comboDown = true
+            DispatchQueue.main.async { self.onTrigger() }
+        } else if !active {
+            comboDown = false
+        }
+    }
+}
+
 // MARK: - App delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var shared: AppDelegate?
 
     private var statusItem: NSStatusItem?
-    private var hotKeyRef: EventHotKeyRef?
-    private var eventHandler: EventHandlerRef?
+    private var hotKey: FnCtrlHotKey?
+    private var retryTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
@@ -598,10 +649,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                    accessibilityDescription: "QuickShot")
         }
         let menu = NSMenu()
-        let captureItem = NSMenuItem(title: "Capture Area",
+        let captureItem = NSMenuItem(title: "Capture Area (fn+⌃)",
                                      action: #selector(captureFromMenu),
-                                     keyEquivalent: String(UnicodeScalar(NSRightArrowFunctionKey)!))
-        captureItem.keyEquivalentModifierMask = [.command, .option]
+                                     keyEquivalent: "")
         captureItem.target = self
         menu.addItem(captureItem)
         menu.addItem(.separator())
@@ -612,28 +662,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.menu = menu
         statusItem = item
 
-        registerHotkey()
+        // The event tap needs Accessibility; this shows the system prompt once.
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        AXIsProcessTrustedWithOptions(options)
+
+        installHotkey()
     }
 
     @objc func captureFromMenu() {
         startCapture()
     }
 
-    private func registerHotkey() {
-        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
-                                      eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetApplicationEventTarget(), { _, _, _ -> OSStatus in
-            DispatchQueue.main.async {
-                AppDelegate.shared?.startCapture()
+    private func installHotkey() {
+        let hk = FnCtrlHotKey { AppDelegate.shared?.startCapture() }
+        if hk.isActive {
+            hotKey = hk
+            retryTimer?.invalidate()
+            retryTimer = nil
+        } else if retryTimer == nil {
+            // No Accessibility grant yet; keep trying so the hotkey starts
+            // working the moment the user flips the toggle.
+            retryTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
+                AppDelegate.shared?.installHotkeyFromTimer()
             }
-            return noErr
-        }, 1, &eventType, nil, &eventHandler)
+        }
+    }
 
-        let hotKeyID = EventHotKeyID(signature: OSType(0x5153_4854), id: 1) // "QSHT"
-        RegisterEventHotKey(UInt32(kVK_RightArrow),
-                            UInt32(cmdKey | optionKey),
-                            hotKeyID,
-                            GetApplicationEventTarget(), 0, &hotKeyRef)
+    private func installHotkeyFromTimer() {
+        guard hotKey == nil else { return }
+        installHotkey()
     }
 
     func startCapture() {
