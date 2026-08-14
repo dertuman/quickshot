@@ -24,7 +24,7 @@ Prefer building from source? `git clone https://github.com/dertuman/quickshot &&
 
 - **fn+⌃** (left control) freezes all your screens under a dimmed overlay. Drag to select. Press it again to bail out, same as Esc.
 - Grab the corner and edge handles to resize the selection. Your drawings stay pinned to the screen content while you do.
-- **Drag inside the selection to draw** — a red arrow by default. The toolbar under the selection switches tools: **Move**, **Arrow**, **Box**.
+- **Drag inside the selection to draw**: a red arrow by default. The toolbar under the selection switches tools: **Move**, **Arrow**, **Box**.
 - **⏎, ⌘C, or ⌃C** copies the annotated shot to your clipboard and closes. **Save…** (or ⌘S) writes a PNG instead. **Esc** bails out.
 - **Record** (or R) records the selected region instead: a thin red border marks it, the menu bar icon becomes a red stop button, and fn+⌃ (or clicking it) stops. The MP4 lands on your Desktop with the file already on your clipboard, ready to paste into Slack or wherever. 60 fps, H.264, no audio, tiny files.
 
@@ -45,7 +45,7 @@ Want QuickShot to start when your Mac starts? System Settings > General > Login 
 
 ## Why
 
-I used Lightshot for years, but on a multi-monitor setup it takes a second or two before you can even start selecting. That delay, hundreds of times a day, adds up. QuickShot does the two things I actually used — red arrows and red boxes on a region of the screen — and does them instantly.
+I used Lightshot for years, but on a multi-monitor setup it takes a second or two before you can even start selecting. That delay, hundreds of times a day, adds up. QuickShot does the two things I actually used (red arrows and red boxes on a region of the screen) and does them instantly.
 
 ## How it works
 
