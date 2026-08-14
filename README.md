@@ -8,19 +8,15 @@ Press fn+⌃, drag over what you want, draw a red arrow at the thing, hit ⏎. I
 
 ## Install
 
-You need a Mac. That's it.
-
-**1. Install QuickShot.** Paste this in Terminal:
+Paste this in Terminal:
 
 ```
-git clone https://github.com/dertuman/quickshot && cd quickshot && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/dertuman/quickshot/main/install.sh | bash
 ```
 
-This builds the app (a few seconds) and puts it in Applications. If Terminal complains about missing developer tools, run `xcode-select --install` first.
+Allow **Accessibility** and **Screen Recording** when macOS asks (that's how it sees the hotkey and takes the shot). Then press fn+⌃ and drag. That's it.
 
-**2. Allow the two permissions** when macOS asks: **Accessibility** (to see the fn+⌃ hotkey) and **Screen Recording** (to take the shot). If you missed the prompts, go to System Settings > Privacy & Security and turn QuickShot on in both lists, then relaunch it.
-
-**3. Press fn+⌃ and drag.** Done. Both keys sit in the bottom-left corner of the keyboard, one hand, no contortion.
+Prefer building from source? `git clone https://github.com/dertuman/quickshot && cd quickshot && ./build.sh` (needs the Xcode Command Line Tools).
 
 ## Use
 
