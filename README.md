@@ -2,9 +2,11 @@
   <img src="assets/logo.svg" width="150" alt="QuickShot logo">
 </p>
 
-# QuickShot
+<h1 align="center">QuickShot</h1>
 
-Press fn+⌃, drag over what you want, draw a red arrow at the thing, hit ⏎. It's in your clipboard. Or hit **Record** instead and the same region becomes a lightweight MP4. Instant even on multi-monitor setups, because the screen is frozen locally the moment you press the key. No account, no cloud, free forever.
+<p align="center"><b>Snap it. Arrow it. Paste it. Or record it.<br>One key. Zero waiting.</b></p>
+
+Press fn+⌃ and your screen freezes instantly, all monitors at once. Drag over what matters, drop a red arrow on it, hit ⏎. It's on your clipboard before your brain catches up. Need motion? Hit **Record** and the same selection becomes a featherweight MP4, ready to paste anywhere. No OBS, no setup screens, no account, no cloud. Free forever.
 
 ## Install
 
