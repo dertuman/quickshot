@@ -1,0 +1,11 @@
+<svg width="200" height="200" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="10" y="10" width="180" height="180" rx="42" fill="#1C1C1E"/>
+  <!-- viewfinder corners -->
+  <path d="M52 74 V60 a8 8 0 0 1 8-8 h14" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M126 52 h14 a8 8 0 0 1 8 8 v14" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M148 126 v14 a8 8 0 0 1-8 8 h-14" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <path d="M74 148 H60 a8 8 0 0 1-8-8 v-14" stroke="#FFFFFF" stroke-width="10" stroke-linecap="round" fill="none"/>
+  <!-- red arrow annotation -->
+  <path d="M78 122 L114 86" stroke="#FF453A" stroke-width="11" stroke-linecap="round"/>
+  <path d="M118 82 L96 88 L112 104 Z" fill="#FF453A" stroke="#FF453A" stroke-width="6" stroke-linejoin="round"/>
+</svg>
