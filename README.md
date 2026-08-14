@@ -24,7 +24,7 @@ This builds the app (a few seconds) and puts it in Applications. If Terminal com
 
 ## Use
 
-- **fn+⌃** freezes all your screens under a dimmed overlay. Drag to select.
+- **fn+⌃** (left control) freezes all your screens under a dimmed overlay. Drag to select. Press it again to bail out, same as Esc.
 - Grab the corner and edge handles to resize the selection. Your drawings stay pinned to the screen content while you do.
 - **Drag inside the selection to draw** — a red arrow by default. The toolbar under the selection switches tools: **Move**, **Arrow**, **Box**.
 - **⏎, ⌘C, or ⌃C** copies the annotated shot to your clipboard and closes. **Save…** (or ⌘S) writes a PNG instead. **Esc** bails out.

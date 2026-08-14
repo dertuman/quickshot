@@ -583,9 +583,8 @@ final class CaptureSession {
 // MARK: - Hotkey (modifier chords via event tap, since Carbon hotkeys can't see fn or sides)
 
 final class ChordHotKey {
-    // Device-dependent modifier bits from IOLLEvent.h, the ones that distinguish sides.
+    // Device-dependent modifier bit from IOLLEvent.h, the one that distinguishes sides.
     private static let leftControlMask: UInt64 = 0x0001  // NX_DEVICELCTLKEYMASK
-    private static let leftOptionMask: UInt64 = 0x0020   // NX_DEVICELALTKEYMASK
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
@@ -625,10 +624,8 @@ final class ChordHotKey {
         }
         guard type == .flagsChanged else { return }
         let flags = event.flags
-        let fnCtrl = flags.contains(.maskSecondaryFn) && flags.contains(.maskControl)
-        let leftCtrlLeftOpt = flags.rawValue & Self.leftControlMask != 0
-            && flags.rawValue & Self.leftOptionMask != 0
-        let active = fnCtrl || leftCtrlLeftOpt
+        let active = flags.contains(.maskSecondaryFn)
+            && flags.rawValue & Self.leftControlMask != 0
         if active && !comboDown {
             comboDown = true
             DispatchQueue.main.async { self.onTrigger() }
@@ -658,7 +655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let menu = NSMenu()
         menu.delegate = self
-        let captureItem = NSMenuItem(title: "Capture Area (fn+⌃ or ⌃+⌥)",
+        let captureItem = NSMenuItem(title: "Capture Area (fn+⌃)",
                                      action: #selector(captureFromMenu),
                                      keyEquivalent: "")
         captureItem.target = self
@@ -722,7 +719,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func startCapture() {
-        CaptureSession.begin()
+        // The same chord toggles: press again to dismiss, like Esc.
+        if let session = CaptureSession.current {
+            session.dismiss()
+        } else {
+            CaptureSession.begin()
+        }
     }
 }
 
