@@ -580,9 +580,13 @@ final class CaptureSession {
     }
 }
 
-// MARK: - Hotkey (fn+ctrl via event tap, since Carbon hotkeys can't see fn)
+// MARK: - Hotkey (modifier chords via event tap, since Carbon hotkeys can't see fn or sides)
 
-final class FnCtrlHotKey {
+final class ChordHotKey {
+    // Device-dependent modifier bits from IOLLEvent.h, the ones that distinguish sides.
+    private static let leftControlMask: UInt64 = 0x0001  // NX_DEVICELCTLKEYMASK
+    private static let leftOptionMask: UInt64 = 0x0020   // NX_DEVICELALTKEYMASK
+
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var comboDown = false
@@ -595,7 +599,7 @@ final class FnCtrlHotKey {
 
         let mask = 1 << CGEventType.flagsChanged.rawValue
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
-            let hotKey = Unmanaged<FnCtrlHotKey>.fromOpaque(userInfo!).takeUnretainedValue()
+            let hotKey = Unmanaged<ChordHotKey>.fromOpaque(userInfo!).takeUnretainedValue()
             hotKey.handle(type: type, event: event)
             return Unmanaged.passUnretained(event)
         }
@@ -621,7 +625,10 @@ final class FnCtrlHotKey {
         }
         guard type == .flagsChanged else { return }
         let flags = event.flags
-        let active = flags.contains(.maskSecondaryFn) && flags.contains(.maskControl)
+        let fnCtrl = flags.contains(.maskSecondaryFn) && flags.contains(.maskControl)
+        let leftCtrlLeftOpt = flags.rawValue & Self.leftControlMask != 0
+            && flags.rawValue & Self.leftOptionMask != 0
+        let active = fnCtrl || leftCtrlLeftOpt
         if active && !comboDown {
             comboDown = true
             DispatchQueue.main.async { self.onTrigger() }
@@ -633,11 +640,12 @@ final class FnCtrlHotKey {
 
 // MARK: - App delegate
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static var shared: AppDelegate?
 
     private var statusItem: NSStatusItem?
-    private var hotKey: FnCtrlHotKey?
+    private var hotKeyStatusItem: NSMenuItem?
+    private var hotKey: ChordHotKey?
     private var retryTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -649,11 +657,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                    accessibilityDescription: "QuickShot")
         }
         let menu = NSMenu()
-        let captureItem = NSMenuItem(title: "Capture Area (fn+⌃)",
+        menu.delegate = self
+        let captureItem = NSMenuItem(title: "Capture Area (fn+⌃ or ⌃+⌥)",
                                      action: #selector(captureFromMenu),
                                      keyEquivalent: "")
         captureItem.target = self
         menu.addItem(captureItem)
+        let statusLine = NSMenuItem(title: "", action: #selector(openAccessibilitySettings),
+                                    keyEquivalent: "")
+        statusLine.target = self
+        menu.addItem(statusLine)
+        hotKeyStatusItem = statusLine
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit QuickShot",
                                   action: #selector(NSApplication.terminate(_:)),
@@ -673,8 +687,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startCapture()
     }
 
+    @objc func openAccessibilitySettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if hotKey?.isActive == true {
+            hotKeyStatusItem?.title = "Hotkey active"
+            hotKeyStatusItem?.action = nil
+        } else {
+            hotKeyStatusItem?.title = "⚠️ Hotkey off — grant Accessibility…"
+            hotKeyStatusItem?.action = #selector(openAccessibilitySettings)
+        }
+    }
+
     private func installHotkey() {
-        let hk = FnCtrlHotKey { AppDelegate.shared?.startCapture() }
+        let hk = ChordHotKey { AppDelegate.shared?.startCapture() }
         if hk.isActive {
             hotKey = hk
             retryTimer?.invalidate()
