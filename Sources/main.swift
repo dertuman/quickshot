@@ -2,6 +2,7 @@ import Cocoa
 import ScreenCaptureKit
 import UniformTypeIdentifiers
 import ApplicationServices
+import AVFoundation
 
 // MARK: - Annotations
 
@@ -61,6 +62,9 @@ final class OverlayWindow: NSWindow {
 final class OverlayView: NSView {
     weak var session: CaptureSession?
     let screenImage: CGImage
+    var displayID: CGDirectDisplayID = 0
+    var screenFrame: NSRect = .zero
+    var backingScale: CGFloat = 2
 
     var selection: NSRect?
     var annotations: [Annotation] = []
@@ -307,8 +311,10 @@ final class OverlayView: NSView {
             undoAnnotation()
         } else if key == "a" {
             selectTool(.arrow)
-        } else if key == "b" || key == "r" {
+        } else if key == "b" {
             selectTool(.box)
+        } else if key == "r" {
+            session?.startRecording(from: self)
         } else if key == "m" || key == "v" {
             selectTool(.move)
         } else {
@@ -345,16 +351,17 @@ final class OverlayView: NSView {
         toolControl = control
 
         let undoButton = NSButton(title: "Undo", target: self, action: #selector(undoPressed))
+        let recordButton = NSButton(title: "Record", target: self, action: #selector(recordPressed))
         let saveButton = NSButton(title: "Save…", target: self, action: #selector(savePressed))
         let copyButton = NSButton(title: "Copy", target: self, action: #selector(copyPressed))
         let cancelButton = NSButton(title: "✕", target: self, action: #selector(cancelPressed))
         copyButton.keyEquivalent = "\r"
-        for b in [undoButton, saveButton, copyButton, cancelButton] {
+        for b in [undoButton, recordButton, saveButton, copyButton, cancelButton] {
             b.bezelStyle = .rounded
             b.controlSize = .regular
         }
 
-        let stack = NSStackView(views: [control, undoButton, copyButton, saveButton, cancelButton])
+        let stack = NSStackView(views: [control, undoButton, recordButton, copyButton, saveButton, cancelButton])
         stack.orientation = .horizontal
         stack.spacing = 8
         let fit = stack.fittingSize
@@ -393,6 +400,7 @@ final class OverlayView: NSView {
     }
 
     @objc private func undoPressed() { undoAnnotation(); window?.makeFirstResponder(self) }
+    @objc private func recordPressed() { session?.startRecording(from: self) }
     @objc private func copyPressed() { session?.copyAndFinish(from: self) }
     @objc private func savePressed() { session?.saveAndFinish(from: self) }
     @objc private func cancelPressed() { session?.dismiss() }
@@ -424,6 +432,158 @@ final class OverlayView: NSView {
         NSGraphicsContext.restoreGraphicsState()
         rep.size = NSSize(width: sel.width, height: sel.height)
         return rep
+    }
+}
+
+// MARK: - Recording
+
+final class RecordingBorderView: NSView {
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 3), xRadius: 4, yRadius: 4)
+        path.lineWidth = 3
+        NSColor.systemRed.setStroke()
+        path.stroke()
+    }
+}
+
+@available(macOS 15.0, *)
+final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDelegate {
+    static var current: RecordingSession?
+
+    private let displayID: CGDirectDisplayID
+    private let sourceRect: CGRect  // display-local points, origin top-left
+    private let pixelSize: CGSize
+    private let borderWindow: NSWindow
+    private let fileURL: URL
+    private var stream: SCStream?
+    private var recordingOutput: SCRecordingOutput?
+    private var stopping = false
+    private var finalized = false
+
+    static func begin(displayID: CGDirectDisplayID, sourceRect: CGRect,
+                      pixelSize: CGSize, globalRegion: NSRect) {
+        guard current == nil else { return }
+        let session = RecordingSession(displayID: displayID, sourceRect: sourceRect,
+                                       pixelSize: pixelSize, globalRegion: globalRegion)
+        current = session
+        session.start()
+    }
+
+    private init(displayID: CGDirectDisplayID, sourceRect: CGRect,
+                 pixelSize: CGSize, globalRegion: NSRect) {
+        self.displayID = displayID
+        self.sourceRect = sourceRect
+        self.pixelSize = pixelSize
+
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!
+        fileURL = desktop.appendingPathComponent("Recording \(df.string(from: Date())).mp4")
+
+        // The border sits entirely outside the recorded region so it never
+        // appears in the video.
+        let frame = globalRegion.insetBy(dx: -6, dy: -6)
+        borderWindow = NSWindow(contentRect: frame, styleMask: .borderless,
+                                backing: .buffered, defer: false)
+        borderWindow.isOpaque = false
+        borderWindow.backgroundColor = .clear
+        borderWindow.hasShadow = false
+        borderWindow.level = .screenSaver
+        borderWindow.ignoresMouseEvents = true
+        borderWindow.isReleasedWhenClosed = false
+        borderWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        borderWindow.contentView = RecordingBorderView()
+        super.init()
+    }
+
+    private func start() {
+        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, error in
+            guard let display = content?.displays.first(where: { $0.displayID == self.displayID }) else {
+                DispatchQueue.main.async { self.fail(error) }
+                return
+            }
+            do {
+                let cfg = SCStreamConfiguration()
+                cfg.sourceRect = self.sourceRect
+                cfg.width = Int(self.pixelSize.width)
+                cfg.height = Int(self.pixelSize.height)
+                cfg.minimumFrameInterval = CMTime(value: 1, timescale: 60)
+                cfg.showsCursor = true
+                let filter = SCContentFilter(display: display, excludingWindows: [])
+
+                let recCfg = SCRecordingOutputConfiguration()
+                recCfg.outputURL = self.fileURL
+                recCfg.outputFileType = .mp4
+                recCfg.videoCodecType = .h264
+                let output = SCRecordingOutput(configuration: recCfg, delegate: self)
+
+                let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
+                try stream.addRecordingOutput(output)
+                self.stream = stream
+                self.recordingOutput = output
+                stream.startCapture { err in
+                    DispatchQueue.main.async {
+                        if let err { self.fail(err) } else { self.didStart() }
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async { self.fail(error) }
+            }
+        }
+    }
+
+    private func didStart() {
+        borderWindow.orderFrontRegardless()
+        AppDelegate.shared?.setRecording(true)
+    }
+
+    func stop() {
+        guard !stopping else { return }
+        stopping = true
+        stream?.stopCapture { _ in
+            // didFinishRecording normally lands first; this is the backstop.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.finishRecording() }
+        }
+    }
+
+    func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
+        DispatchQueue.main.async { self.finishRecording() }
+    }
+
+    func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
+        DispatchQueue.main.async { self.fail(error) }
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        DispatchQueue.main.async {
+            if !self.stopping { self.fail(error) }
+        }
+    }
+
+    private func finishRecording() {
+        guard !finalized else { return }
+        finalized = true
+        borderWindow.orderOut(nil)
+        AppDelegate.shared?.setRecording(false)
+        RecordingSession.current = nil
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.writeObjects([fileURL as NSURL])
+        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+    }
+
+    private func fail(_ error: Error?) {
+        guard !finalized else { return }
+        finalized = true
+        borderWindow.orderOut(nil)
+        AppDelegate.shared?.setRecording(false)
+        RecordingSession.current = nil
+        let alert = NSAlert()
+        alert.messageText = "Recording failed"
+        alert.informativeText = error?.localizedDescription ?? "Unknown error"
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 }
 
@@ -497,6 +657,9 @@ final class CaptureSession {
             win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image)
             view.session = self
+            view.displayID = displayID
+            view.screenFrame = screen.frame
+            view.backingScale = screen.backingScaleFactor
             win.contentView = view
             windows.append(win)
             views.append(view)
@@ -551,6 +714,33 @@ final class CaptureSession {
         pb.writeObjects([image])
         pb.setData(png, forType: .png)
         dismiss()
+    }
+
+    func startRecording(from view: OverlayView) {
+        guard #available(macOS 15.0, *) else {
+            dismiss()
+            let alert = NSAlert()
+            alert.messageText = "Recording needs macOS 15 or newer"
+            NSApp.activate(ignoringOtherApps: true)
+            alert.runModal()
+            return
+        }
+        guard let sel = view.selection, sel.width >= 5, sel.height >= 5 else { return }
+        let scale = view.backingScale
+        // SCStream wants the region in display-local points with a top-left origin.
+        let sourceRect = CGRect(x: sel.minX, y: view.bounds.height - sel.maxY,
+                                width: sel.width, height: sel.height)
+        // H.264 needs even pixel dimensions.
+        let pw = max(2, Int(sel.width * scale) & ~1)
+        let ph = max(2, Int(sel.height * scale) & ~1)
+        let globalRegion = NSRect(x: view.screenFrame.origin.x + sel.minX,
+                                  y: view.screenFrame.origin.y + sel.minY,
+                                  width: sel.width, height: sel.height)
+        let displayID = view.displayID
+        dismiss()
+        RecordingSession.begin(displayID: displayID, sourceRect: sourceRect,
+                               pixelSize: CGSize(width: pw, height: ph),
+                               globalRegion: globalRegion)
     }
 
     func saveAndFinish(from view: OverlayView) {
@@ -642,8 +832,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var statusItem: NSStatusItem?
     private var hotKeyStatusItem: NSMenuItem?
+    private var captureMenuItem: NSMenuItem?
     private var hotKey: ChordHotKey?
     private var retryTimer: Timer?
+    private var isRecording = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
@@ -660,6 +852,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                      keyEquivalent: "")
         captureItem.target = self
         menu.addItem(captureItem)
+        captureMenuItem = captureItem
         let statusLine = NSMenuItem(title: "", action: #selector(openAccessibilitySettings),
                                     keyEquivalent: "")
         statusLine.target = self
@@ -688,7 +881,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
+    func setRecording(_ on: Bool) {
+        isRecording = on
+        if let button = statusItem?.button {
+            if on {
+                button.image = NSImage(systemSymbolName: "stop.circle.fill",
+                                       accessibilityDescription: "Stop recording")
+                button.contentTintColor = .systemRed
+            } else {
+                button.image = NSImage(systemSymbolName: "camera.viewfinder",
+                                       accessibilityDescription: "QuickShot")
+                button.contentTintColor = nil
+            }
+        }
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
+        captureMenuItem?.title = isRecording ? "Stop Recording (fn+⌃)" : "Capture Area (fn+⌃)"
         if hotKey?.isActive == true {
             hotKeyStatusItem?.title = "Hotkey active"
             hotKeyStatusItem?.action = nil
@@ -719,7 +928,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func startCapture() {
-        // The same chord toggles: press again to dismiss, like Esc.
+        // The same chord toggles: stop a recording, or dismiss the overlay, like Esc.
+        if #available(macOS 15.0, *), let recording = RecordingSession.current {
+            recording.stop()
+            return
+        }
         if let session = CaptureSession.current {
             session.dismiss()
         } else {
