@@ -492,6 +492,7 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
         borderWindow.ignoresMouseEvents = true
         borderWindow.isReleasedWhenClosed = false
         borderWindow.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        borderWindow.animationBehavior = .none
         borderWindow.contentView = RecordingBorderView()
         super.init()
     }
@@ -655,6 +656,7 @@ final class CaptureSession {
             win.hasShadow = false
             win.isReleasedWhenClosed = false
             win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+            win.animationBehavior = .none
             let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image)
             view.session = self
             view.displayID = displayID
@@ -701,6 +703,12 @@ final class CaptureSession {
     func clearSelections(except view: OverlayView) {
         for v in views where v !== view {
             v.clearSelection()
+        }
+    }
+
+    func copySelectionIfAny() {
+        if let view = views.first(where: { ($0.selection?.width ?? 0) >= 5 && ($0.selection?.height ?? 0) >= 5 }) {
+            copyAndFinish(from: view)
         }
     }
 
@@ -779,12 +787,15 @@ final class ChordHotKey {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var comboDown = false
+    private var fnWasDown = false
     private let onTrigger: () -> Void
+    private let onFnTap: () -> Void
 
     var isActive: Bool { tap != nil }
 
-    init(onTrigger: @escaping () -> Void) {
+    init(onTrigger: @escaping () -> Void, onFnTap: @escaping () -> Void) {
         self.onTrigger = onTrigger
+        self.onFnTap = onFnTap
 
         let mask = 1 << CGEventType.flagsChanged.rawValue
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -814,14 +825,21 @@ final class ChordHotKey {
         }
         guard type == .flagsChanged else { return }
         let flags = event.flags
-        let active = flags.contains(.maskSecondaryFn)
-            && flags.rawValue & Self.leftControlMask != 0
+        let fnDown = flags.contains(.maskSecondaryFn)
+        let ctrlDown = flags.rawValue & Self.leftControlMask != 0
+        let active = fnDown && ctrlDown
         if active && !comboDown {
             comboDown = true
             DispatchQueue.main.async { self.onTrigger() }
         } else if !active {
             comboDown = false
         }
+        // A bare fn tap copies the current selection, so the whole flow is
+        // chord, drag, fn, pasted.
+        if fnDown && !fnWasDown && !ctrlDown {
+            DispatchQueue.main.async { self.onFnTap() }
+        }
+        fnWasDown = fnDown
     }
 }
 
@@ -908,7 +926,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func installHotkey() {
-        let hk = ChordHotKey { AppDelegate.shared?.startCapture() }
+        let hk = ChordHotKey(onTrigger: { AppDelegate.shared?.startCapture() },
+                             onFnTap: { CaptureSession.current?.copySelectionIfAny() })
         if hk.isActive {
             hotKey = hk
             retryTimer?.invalidate()

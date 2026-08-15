@@ -25,7 +25,7 @@ Prefer building from source? `git clone https://github.com/dertuman/quickshot &&
 - **fn+⌃** (left control) freezes all your screens under a dimmed overlay. Drag to select. Press it again to bail out, same as Esc.
 - Grab the corner and edge handles to resize the selection. Your drawings stay pinned to the screen content while you do.
 - **Drag inside the selection to draw**: a red arrow by default. The toolbar under the selection switches tools: **Move**, **Arrow**, **Box**.
-- **⏎, ⌘C, or ⌃C** copies the annotated shot to your clipboard and closes. **Save…** (or ⌘S) writes a PNG instead. **Esc** bails out.
+- **Tap fn** (or ⏎, ⌘C, ⌃C) and the annotated shot is on your clipboard. The whole thing is fn+⌃, drag, fn. **Save…** (or ⌘S) writes a PNG instead. **Esc** bails out.
 - **Record** (or R) records the selected region instead: a thin red border marks it, the menu bar icon becomes a red stop button, and fn+⌃ (or clicking it) stops. The MP4 lands on your Desktop with the file already on your clipboard, ready to paste into Slack or wherever. 60 fps, H.264, no audio, tiny files.
 
 Keyboard while the overlay is up:
@@ -37,7 +37,7 @@ Keyboard while the overlay is up:
 | `R` | Record the selection as MP4 |
 | `M` or `V` | Move tool (drag inside to reposition the selection) |
 | `⌘Z` | Undo last drawing |
-| `⏎` / `⌘C` / `⌃C` | Copy and close |
+| `fn` / `⏎` / `⌘C` / `⌃C` | Copy and close |
 | `⌘S` | Save as PNG |
 | `Esc` | Cancel |
 
