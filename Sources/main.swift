@@ -301,7 +301,7 @@ final class OverlayView: NSView {
 
         if event.keyCode == 53 { // esc
             session?.dismiss()
-        } else if event.keyCode == 36 || event.keyCode == 76 { // return / enter
+        } else if event.keyCode == 36 || event.keyCode == 76 || event.keyCode == 49 { // return / enter / space
             session?.copyAndFinish(from: self)
         } else if cmdOrCtrl && key == "c" {
             session?.copyAndFinish(from: self)
@@ -706,12 +706,6 @@ final class CaptureSession {
         }
     }
 
-    func copySelectionIfAny() {
-        if let view = views.first(where: { ($0.selection?.width ?? 0) >= 5 && ($0.selection?.height ?? 0) >= 5 }) {
-            copyAndFinish(from: view)
-        }
-    }
-
     func copyAndFinish(from view: OverlayView) {
         guard let rep = view.renderComposite(),
               let png = rep.representation(using: .png, properties: [:]) else { return }
@@ -787,15 +781,12 @@ final class ChordHotKey {
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var comboDown = false
-    private var fnWasDown = false
     private let onTrigger: () -> Void
-    private let onFnTap: () -> Void
 
     var isActive: Bool { tap != nil }
 
-    init(onTrigger: @escaping () -> Void, onFnTap: @escaping () -> Void) {
+    init(onTrigger: @escaping () -> Void) {
         self.onTrigger = onTrigger
-        self.onFnTap = onFnTap
 
         let mask = 1 << CGEventType.flagsChanged.rawValue
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -834,12 +825,6 @@ final class ChordHotKey {
         } else if !active {
             comboDown = false
         }
-        // A bare fn tap copies the current selection, so the whole flow is
-        // chord, drag, fn, pasted.
-        if fnDown && !fnWasDown && !ctrlDown {
-            DispatchQueue.main.async { self.onFnTap() }
-        }
-        fnWasDown = fnDown
     }
 }
 
@@ -926,8 +911,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func installHotkey() {
-        let hk = ChordHotKey(onTrigger: { AppDelegate.shared?.startCapture() },
-                             onFnTap: { CaptureSession.current?.copySelectionIfAny() })
+        let hk = ChordHotKey { AppDelegate.shared?.startCapture() }
         if hk.isActive {
             hotKey = hk
             retryTimer?.invalidate()
