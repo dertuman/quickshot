@@ -90,6 +90,11 @@ final class OverlayView: NSView {
     private var toolbar: NSView?
     private var toolControl: NSSegmentedControl?
 
+    private var hoveredHandle: Handle?
+    private var handleHover: [Handle: CGFloat] = [:]
+    private var hoverTimer: Timer?
+    private var pushedCursor = false
+
     init(frame: NSRect, image: CGImage) {
         self.screenImage = image
         super.init(frame: frame)
@@ -126,18 +131,72 @@ final class OverlayView: NSView {
             border.stroke()
 
             for h in Handle.allCases {
-                let p = handlePoint(h, in: sel)
-                let dot = NSRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)
-                NSColor.white.setFill()
-                NSBezierPath(ovalIn: dot).fill()
-                NSColor.black.withAlphaComponent(0.5).setStroke()
-                NSBezierPath(ovalIn: dot).stroke()
+                drawHandle(h, at: handlePoint(h, in: sel))
             }
 
             drawSizeLabel(for: sel)
         } else {
             NSBezierPath(rect: bounds).fill()
         }
+    }
+
+    private func drawHandle(_ h: Handle, at p: NSPoint) {
+        let t = handleHover[h] ?? 0
+        let radius = 4 + 2 * t
+
+        if t > 0.01 {
+            let halo = NSRect(x: p.x - radius - 5, y: p.y - radius - 5,
+                              width: (radius + 5) * 2, height: (radius + 5) * 2)
+            NSColor.white.withAlphaComponent(0.18 * t).setFill()
+            NSBezierPath(ovalIn: halo).fill()
+        }
+
+        NSGraphicsContext.current?.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.45)
+        shadow.shadowBlurRadius = 3
+        shadow.shadowOffset = .zero
+        shadow.set()
+        let dot = NSRect(x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2)
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: dot).fill()
+        NSGraphicsContext.current?.restoreGraphicsState()
+
+        let ring = NSBezierPath(ovalIn: dot.insetBy(dx: 0.5, dy: 0.5))
+        ring.lineWidth = 1
+        NSColor.black.withAlphaComponent(0.35 + 0.25 * t).setStroke()
+        ring.stroke()
+    }
+
+    private func setHovered(_ h: Handle?) {
+        guard h != hoveredHandle else { return }
+        hoveredHandle = h
+        startHoverAnimation()
+    }
+
+    private func startHoverAnimation() {
+        guard hoverTimer == nil else { return }
+        hoverTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 120.0, repeats: true) { [weak self] t in
+            guard let self else { t.invalidate(); return }
+            var settled = true
+            for h in Handle.allCases {
+                let target: CGFloat = (h == self.hoveredHandle) ? 1 : 0
+                let current = self.handleHover[h] ?? 0
+                let next = current + (target - current) * 0.3
+                if abs(target - next) < 0.002 {
+                    self.handleHover[h] = target
+                } else {
+                    self.handleHover[h] = next
+                    settled = false
+                }
+            }
+            self.needsDisplay = true
+            if settled {
+                t.invalidate()
+                self.hoverTimer = nil
+            }
+        }
+        if let t = hoverTimer { RunLoop.current.add(t, forMode: .eventTracking) }
     }
 
     private func drawSizeLabel(for sel: NSRect) {
@@ -169,10 +228,52 @@ final class OverlayView: NSView {
         }
     }
 
+    private static let handleHitRadius: CGFloat = 11
+
+    private func handleRect(_ h: Handle, in r: NSRect) -> NSRect {
+        let p = handlePoint(h, in: r)
+        let s = Self.handleHitRadius
+        return NSRect(x: p.x - s, y: p.y - s, width: s * 2, height: s * 2)
+    }
+
+    private func resizeCursor(for h: Handle) -> NSCursor {
+        if #available(macOS 15.0, *) {
+            let position: NSCursor.FrameResizePosition
+            switch h {
+            case .topLeft: position = .topLeft
+            case .top: position = .top
+            case .topRight: position = .topRight
+            case .left: position = .left
+            case .right: position = .right
+            case .bottomLeft: position = .bottomLeft
+            case .bottom: position = .bottom
+            case .bottomRight: position = .bottomRight
+            }
+            return NSCursor.frameResize(position: position, directions: .all)
+        }
+        let selectorName: String
+        switch h {
+        case .topLeft, .bottomRight: selectorName = "_windowResizeNorthWestSouthEastCursor"
+        case .topRight, .bottomLeft: selectorName = "_windowResizeNorthEastSouthWestCursor"
+        case .left, .right: selectorName = "_windowResizeEastWestCursor"
+        case .top, .bottom: selectorName = "_windowResizeNorthSouthCursor"
+        }
+        let sel = NSSelectorFromString(selectorName)
+        if NSCursor.responds(to: sel),
+           let c = NSCursor.perform(sel)?.takeUnretainedValue() as? NSCursor {
+            return c
+        }
+        switch h {
+        case .left, .right: return .resizeLeftRight
+        case .top, .bottom: return .resizeUpDown
+        default: return .crosshair
+        }
+    }
+
     private func hitHandle(_ p: NSPoint, in r: NSRect) -> Handle? {
         for h in Handle.allCases {
             let hp = handlePoint(h, in: r)
-            if hypot(p.x - hp.x, p.y - hp.y) <= 10 { return h }
+            if hypot(p.x - hp.x, p.y - hp.y) <= Self.handleHitRadius { return h }
         }
         return nil
     }
@@ -189,6 +290,8 @@ final class OverlayView: NSView {
             if let h = hitHandle(p, in: sel) {
                 dragMode = .resizing(h)
                 origRect = sel
+                setHovered(h)
+                pushCursor(resizeCursor(for: h))
                 toolbar?.isHidden = true
                 return
             }
@@ -196,6 +299,7 @@ final class OverlayView: NSView {
                 if tool == .move {
                     dragMode = .moving
                     origRect = sel
+                    pushCursor(.closedHand)
                     toolbar?.isHidden = true
                 } else {
                     dragMode = .drawing
@@ -205,6 +309,7 @@ final class OverlayView: NSView {
         }
 
         // Start a fresh selection
+        setHovered(nil)
         session?.clearSelections(except: self)
         annotations.removeAll()
         selection = NSRect(origin: p, size: .zero)
@@ -262,6 +367,9 @@ final class OverlayView: NSView {
             break
         }
         dragMode = .none
+        popCursorIfNeeded()
+        let p = convert(event.locationInWindow, from: nil)
+        setHovered(selection.flatMap { hitHandle(p, in: $0) })
         updateToolbar()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
@@ -284,11 +392,45 @@ final class OverlayView: NSView {
     }
 
     override func resetCursorRects() {
-        if let sel = selection {
-            addCursorRect(bounds, cursor: .crosshair)
-            addCursorRect(sel, cursor: tool == .move ? .openHand : .crosshair)
-        } else {
-            addCursorRect(bounds, cursor: .crosshair)
+        addCursorRect(bounds, cursor: .crosshair)
+        guard let sel = selection, sel.width > 0, sel.height > 0 else { return }
+        addCursorRect(sel, cursor: tool == .move ? .openHand : .crosshair)
+        // Added last so they win the hit test against the selection body.
+        for h in Handle.allCases {
+            addCursorRect(handleRect(h, in: sel), cursor: resizeCursor(for: h))
+        }
+    }
+
+    // MARK: Hover
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self,
+                                       userInfo: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        guard case .none = dragMode else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        setHovered(selection.flatMap { hitHandle(p, in: $0) })
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setHovered(nil)
+    }
+
+    private func pushCursor(_ cursor: NSCursor) {
+        cursor.push()
+        pushedCursor = true
+    }
+
+    private func popCursorIfNeeded() {
+        if pushedCursor {
+            NSCursor.pop()
+            pushedCursor = false
         }
     }
 
@@ -334,6 +476,7 @@ final class OverlayView: NSView {
     }
 
     func clearSelection() {
+        setHovered(nil)
         selection = nil
         annotations.removeAll()
         draft = nil
@@ -432,6 +575,346 @@ final class OverlayView: NSView {
         NSGraphicsContext.restoreGraphicsState()
         rep.size = NSSize(width: sel.width, height: sel.height)
         return rep
+    }
+}
+
+// MARK: - History
+
+struct HistoryItem {
+    let url: URL
+    let date: Date
+    let isVideo: Bool
+}
+
+final class HistoryStore {
+    static let shared = HistoryStore()
+    private static let enabledKey = "HistoryEnabled"
+    private static let maxItems = 100
+
+    var isEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: Self.enabledKey) as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: Self.enabledKey) }
+    }
+
+    private var directory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("QuickShot/History", isDirectory: true)
+    }
+
+    private func makeURL(prefix: String, ext: String) -> URL {
+        let dir = directory
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        let name = "\(prefix) \(df.string(from: Date()))"
+        var url = dir.appendingPathComponent("\(name).\(ext)")
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) {
+            url = dir.appendingPathComponent("\(name) (\(n)).\(ext)")
+            n += 1
+        }
+        return url
+    }
+
+    func saveImage(_ png: Data) {
+        guard isEnabled else { return }
+        try? png.write(to: makeURL(prefix: "Screenshot", ext: "png"))
+        prune()
+    }
+
+    func saveVideo(at source: URL) {
+        guard isEnabled else { return }
+        try? FileManager.default.copyItem(at: source, to: makeURL(prefix: "Recording", ext: "mp4"))
+        prune()
+    }
+
+    func items() -> [HistoryItem] {
+        let fm = FileManager.default
+        guard let urls = try? fm.contentsOfDirectory(at: directory,
+                                                    includingPropertiesForKeys: [.creationDateKey],
+                                                    options: .skipsHiddenFiles) else { return [] }
+        return urls.compactMap { url -> HistoryItem? in
+            let ext = url.pathExtension.lowercased()
+            guard ext == "png" || ext == "mp4" else { return nil }
+            let date = (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate ?? .distantPast
+            return HistoryItem(url: url, date: date, isVideo: ext == "mp4")
+        }.sorted { $0.date > $1.date }
+    }
+
+    func delete(_ item: HistoryItem) {
+        try? FileManager.default.removeItem(at: item.url)
+    }
+
+    func clear() {
+        for item in items() { delete(item) }
+    }
+
+    private func prune() {
+        let all = items()
+        guard all.count > Self.maxItems else { return }
+        for item in all[Self.maxItems...] { delete(item) }
+    }
+}
+
+// MARK: - History window
+
+final class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    static var shared: HistoryWindowController?
+
+    private var window: NSWindow!
+    private var tableView: NSTableView!
+    private var previewView: NSImageView!
+    private var infoLabel: NSTextField!
+    private var copyButton: NSButton!
+    private var revealButton: NSButton!
+    private var deleteButton: NSButton!
+    private var emptyLabel: NSTextField!
+    private var items: [HistoryItem] = []
+    private var thumbnails: [URL: NSImage] = [:]
+
+    static func show() {
+        if shared == nil { shared = HistoryWindowController() }
+        shared?.present()
+    }
+
+    override init() {
+        super.init()
+        buildWindow()
+    }
+
+    private func present() {
+        reload()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    private func buildWindow() {
+        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 480),
+                           styleMask: [.titled, .closable, .resizable],
+                           backing: .buffered, defer: false)
+        win.title = "History"
+        win.isReleasedWhenClosed = false
+        win.minSize = NSSize(width: 600, height: 360)
+        win.center()
+        win.delegate = self
+        window = win
+
+        let content = NSView()
+        win.contentView = content
+
+        let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("item"))
+        let table = NSTableView()
+        table.addTableColumn(column)
+        table.headerView = nil
+        table.rowHeight = 56
+        table.style = .inset
+        table.dataSource = self
+        table.delegate = self
+        table.doubleAction = #selector(copySelected)
+        table.target = self
+        tableView = table
+
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(scroll)
+
+        let preview = NSImageView()
+        preview.imageScaling = .scaleProportionallyDown
+        preview.imageFrameStyle = .none
+        preview.wantsLayer = true
+        preview.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.06).cgColor
+        preview.layer?.cornerRadius = 8
+        preview.translatesAutoresizingMaskIntoConstraints = false
+        previewView = preview
+        content.addSubview(preview)
+
+        let info = NSTextField(labelWithString: "")
+        info.font = .systemFont(ofSize: 12)
+        info.textColor = .secondaryLabelColor
+        info.lineBreakMode = .byWordWrapping
+        info.maximumNumberOfLines = 3
+        info.translatesAutoresizingMaskIntoConstraints = false
+        infoLabel = info
+        content.addSubview(info)
+
+        let copy = NSButton(title: "Copy", target: self, action: #selector(copySelected))
+        copy.bezelStyle = .rounded
+        copy.keyEquivalent = "\r"
+        copyButton = copy
+        let reveal = NSButton(title: "Reveal in Finder", target: self, action: #selector(revealSelected))
+        reveal.bezelStyle = .rounded
+        revealButton = reveal
+        let delete = NSButton(title: "Delete", target: self, action: #selector(deleteSelected))
+        delete.bezelStyle = .rounded
+        deleteButton = delete
+        let buttons = NSStackView(views: [copy, reveal, delete])
+        buttons.orientation = .horizontal
+        buttons.spacing = 8
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(buttons)
+
+        let empty = NSTextField(labelWithString: "No captures yet")
+        empty.font = .systemFont(ofSize: 13)
+        empty.textColor = .tertiaryLabelColor
+        empty.translatesAutoresizingMaskIntoConstraints = false
+        emptyLabel = empty
+        content.addSubview(empty)
+
+        NSLayoutConstraint.activate([
+            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            scroll.topAnchor.constraint(equalTo: content.topAnchor),
+            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            scroll.widthAnchor.constraint(equalToConstant: 280),
+
+            preview.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 16),
+            preview.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
+            preview.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+
+            info.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
+            info.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
+            info.topAnchor.constraint(equalTo: preview.bottomAnchor, constant: 12),
+
+            buttons.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
+            buttons.topAnchor.constraint(equalTo: info.bottomAnchor, constant: 12),
+            buttons.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+
+            empty.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            empty.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+        ])
+    }
+
+    func reload() {
+        let selectedURL = selectedItem()?.url
+        items = HistoryStore.shared.items()
+        thumbnails = thumbnails.filter { pair in items.contains { $0.url == pair.key } }
+        tableView.reloadData()
+        emptyLabel.isHidden = !items.isEmpty
+        if let selectedURL, let idx = items.firstIndex(where: { $0.url == selectedURL }) {
+            tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
+        } else if !items.isEmpty {
+            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+        updateDetail()
+    }
+
+    private func selectedItem() -> HistoryItem? {
+        let row = tableView?.selectedRow ?? -1
+        guard row >= 0, row < items.count else { return nil }
+        return items[row]
+    }
+
+    private func thumbnail(for item: HistoryItem) -> NSImage? {
+        if let cached = thumbnails[item.url] { return cached }
+        var image: NSImage?
+        if item.isVideo {
+            let gen = AVAssetImageGenerator(asset: AVURLAsset(url: item.url))
+            gen.appliesPreferredTrackTransform = true
+            gen.maximumSize = CGSize(width: 480, height: 480)
+            if let cg = try? gen.copyCGImage(at: .zero, actualTime: nil) {
+                image = NSImage(cgImage: cg, size: .zero)
+            }
+        } else {
+            image = NSImage(contentsOf: item.url)
+        }
+        if let image { thumbnails[item.url] = image }
+        return image
+    }
+
+    private func updateDetail() {
+        guard let item = selectedItem() else {
+            previewView.image = nil
+            infoLabel.stringValue = ""
+            for b in [copyButton, revealButton, deleteButton] { b?.isEnabled = false }
+            return
+        }
+        for b in [copyButton, revealButton, deleteButton] { b?.isEnabled = true }
+        previewView.image = thumbnail(for: item)
+
+        let df = DateFormatter()
+        df.dateStyle = .medium
+        df.timeStyle = .short
+        var parts = [df.string(from: item.date)]
+        if let image = previewView.image, let rep = image.representations.first, rep.pixelsWide > 0 {
+            parts.append("\(rep.pixelsWide) × \(rep.pixelsHigh) px")
+        }
+        if let size = (try? item.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
+            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
+        }
+        if item.isVideo { parts.append("MP4 (copies as a file)") }
+        infoLabel.stringValue = parts.joined(separator: "   ·   ")
+    }
+
+    @objc private func copySelected() {
+        guard let item = selectedItem() else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        if item.isVideo {
+            pb.writeObjects([item.url as NSURL])
+        } else if let png = try? Data(contentsOf: item.url), let image = NSImage(data: png) {
+            pb.writeObjects([image])
+            pb.setData(png, forType: .png)
+        }
+    }
+
+    @objc private func revealSelected() {
+        guard let item = selectedItem() else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([item.url])
+    }
+
+    @objc private func deleteSelected() {
+        guard let item = selectedItem() else { return }
+        HistoryStore.shared.delete(item)
+        reload()
+    }
+
+    // MARK: Table
+
+    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+
+    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        let id = NSUserInterfaceItemIdentifier("cell")
+        let item = items[row]
+        let cell: NSTableCellView
+        if let reused = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView {
+            cell = reused
+        } else {
+            cell = NSTableCellView()
+            cell.identifier = id
+            let iv = NSImageView()
+            iv.imageScaling = .scaleProportionallyDown
+            iv.wantsLayer = true
+            iv.layer?.cornerRadius = 4
+            iv.layer?.masksToBounds = true
+            iv.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(iv)
+            cell.imageView = iv
+            let tf = NSTextField(labelWithString: "")
+            tf.font = .systemFont(ofSize: 12)
+            tf.lineBreakMode = .byTruncatingTail
+            tf.translatesAutoresizingMaskIntoConstraints = false
+            cell.addSubview(tf)
+            cell.textField = tf
+            NSLayoutConstraint.activate([
+                iv.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
+                iv.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+                iv.widthAnchor.constraint(equalToConstant: 72),
+                iv.heightAnchor.constraint(equalToConstant: 48),
+                tf.leadingAnchor.constraint(equalTo: iv.trailingAnchor, constant: 8),
+                tf.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
+                tf.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+            ])
+        }
+        cell.imageView?.image = thumbnail(for: item)
+        let df = DateFormatter()
+        df.dateFormat = "MMM d, HH:mm"
+        cell.textField?.stringValue = (item.isVideo ? "🎬 " : "") + df.string(from: item.date)
+        return cell
+    }
+
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        updateDetail()
     }
 }
 
@@ -571,6 +1054,8 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.writeObjects([fileURL as NSURL])
+        HistoryStore.shared.saveVideo(at: fileURL)
+        HistoryWindowController.shared?.reload()
         NSWorkspace.shared.activateFileViewerSelecting([fileURL])
     }
 
@@ -657,6 +1142,7 @@ final class CaptureSession {
             win.isReleasedWhenClosed = false
             win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
             win.animationBehavior = .none
+            win.acceptsMouseMovedEvents = true
             let view = OverlayView(frame: NSRect(origin: .zero, size: screen.frame.size), image: image)
             view.session = self
             view.displayID = displayID
@@ -715,6 +1201,8 @@ final class CaptureSession {
         pb.clearContents()
         pb.writeObjects([image])
         pb.setData(png, forType: .png)
+        HistoryStore.shared.saveImage(png)
+        HistoryWindowController.shared?.reload()
         dismiss()
     }
 
@@ -758,6 +1246,8 @@ final class CaptureSession {
         NSApp.activate(ignoringOtherApps: true)
         if panel.runModal() == .OK, let url = panel.url {
             try? png.write(to: url)
+            HistoryStore.shared.saveImage(png)
+            HistoryWindowController.shared?.reload()
         }
     }
 
@@ -836,6 +1326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var hotKeyStatusItem: NSMenuItem?
     private var captureMenuItem: NSMenuItem?
+    private var keepHistoryMenuItem: NSMenuItem?
     private var hotKey: ChordHotKey?
     private var retryTimer: Timer?
     private var isRecording = false
@@ -856,6 +1347,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         captureItem.target = self
         menu.addItem(captureItem)
         captureMenuItem = captureItem
+        let historyItem = NSMenuItem(title: "History…",
+                                     action: #selector(showHistory),
+                                     keyEquivalent: "")
+        historyItem.target = self
+        menu.addItem(historyItem)
+        let keepItem = NSMenuItem(title: "Keep History",
+                                  action: #selector(toggleHistory),
+                                  keyEquivalent: "")
+        keepItem.target = self
+        menu.addItem(keepItem)
+        keepHistoryMenuItem = keepItem
         let statusLine = NSMenuItem(title: "", action: #selector(openAccessibilitySettings),
                                     keyEquivalent: "")
         statusLine.target = self
@@ -880,6 +1382,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startCapture()
     }
 
+    @objc func showHistory() {
+        HistoryWindowController.show()
+    }
+
+    @objc func toggleHistory() {
+        HistoryStore.shared.isEnabled.toggle()
+    }
+
     @objc func openAccessibilitySettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
@@ -901,6 +1411,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         captureMenuItem?.title = isRecording ? "Stop Recording (fn+⌃)" : "Capture Area (fn+⌃)"
+        keepHistoryMenuItem?.state = HistoryStore.shared.isEnabled ? .on : .off
         if hotKey?.isActive == true {
             hotKeyStatusItem?.title = "Hotkey active"
             hotKeyStatusItem?.action = nil
