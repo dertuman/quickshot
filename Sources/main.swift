@@ -228,7 +228,7 @@ final class OverlayView: NSView {
         }
     }
 
-    private static let handleHitRadius: CGFloat = 11
+    private static let handleHitRadius: CGFloat = 14
 
     private func handleRect(_ h: Handle, in r: NSRect) -> NSRect {
         let p = handlePoint(h, in: r)
@@ -370,6 +370,7 @@ final class OverlayView: NSView {
         popCursorIfNeeded()
         let p = convert(event.locationInWindow, from: nil)
         setHovered(selection.flatMap { hitHandle(p, in: $0) })
+        applyCursor(at: p)
         updateToolbar()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
@@ -416,10 +417,28 @@ final class OverlayView: NSView {
         guard case .none = dragMode else { return }
         let p = convert(event.locationInWindow, from: nil)
         setHovered(selection.flatMap { hitHandle(p, in: $0) })
+        applyCursor(at: p)
     }
 
     override func mouseExited(with event: NSEvent) {
         setHovered(nil)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        applyCursor(at: convert(event.locationInWindow, from: nil))
+    }
+
+    /// Cursor rects are unreliable on a borderless screen-saver-level window,
+    /// so drive the cursor straight off the pointer position.
+    private func applyCursor(at p: NSPoint) {
+        guard !pushedCursor else { return }
+        if let h = hoveredHandle {
+            resizeCursor(for: h).set()
+        } else if let sel = selection, sel.contains(p) {
+            (tool == .move ? NSCursor.openHand : NSCursor.crosshair).set()
+        } else {
+            NSCursor.crosshair.set()
+        }
     }
 
     private func pushCursor(_ cursor: NSCursor) {
@@ -433,6 +452,7 @@ final class OverlayView: NSView {
             pushedCursor = false
         }
     }
+
 
     // MARK: Keyboard
 
@@ -468,6 +488,9 @@ final class OverlayView: NSView {
         tool = t
         toolControl?.selectedSegment = t.rawValue
         window?.invalidateCursorRects(for: self)
+        if let loc = window?.mouseLocationOutsideOfEventStream {
+            applyCursor(at: convert(loc, from: nil))
+        }
     }
 
     func undoAnnotation() {
