@@ -59,3 +59,46 @@ The build signs with your Apple Development certificate if you have one (so the 
 ## License
 
 MIT
+
+## Automatic recording controls
+
+The running app accepts local, same-user recording commands. Build and install the
+updated app once. The client is bundled at
+`/Applications/QuickShot.app/Contents/Resources/quickshotctl` (also `bin/quickshotctl`
+in the repository). It requires Python 3. Existing macOS Screen Recording
+permission still applies; the controls do not request or bypass permissions.
+
+```bash
+bin/quickshotctl sources
+bin/quickshotctl status
+bin/quickshotctl start --window 4205 --insets 87 0 0 0 --output /absolute/path/demo.mp4
+bin/quickshotctl mark 'clicked Run tests'
+bin/quickshotctl stop
+```
+
+Choose the actual window ID from `sources`; IDs change between sessions.
+`--insets` means **top, right, bottom, left** in logical screen points. The example
+removes 87 points of browser chrome; inspect the current window before choosing
+insets. Alternatively use `--display ID --rect X Y WIDTH HEIGHT`, in display-local
+top-left coordinates. The whole region must fit one display.
+
+This records the visible **display region**, so keep the intended window in place
+and unobscured until `stop`. It captures the cursor but no audio. Automatic
+recordings do not change the clipboard, open Finder, or add to capture history.
+Manual selection and recording retain their existing behavior.
+
+Every command emits JSON and returns nonzero on failure. `start` confirms the
+stream started; `stop` waits for the recording output to finish writing the MP4.
+Existing output files are never overwritten. `status` reports recording state,
+path and elapsed time; `mark` stores approximate elapsed timestamps in the
+adjacent `demo.mp4.markers.json` file for editing. Markers are recorded from stream
+start confirmation, so inspect nearby frames for exact cuts.
+
+The controls use a private `0700` mailbox in
+`~/Library/Application Support/QuickShot/Control`, with `0600` request files,
+owner checks and expiring requests. There is no network listener. Keep the
+updated app running. A timeout is an uncertain outcome: inspect `status` before
+retrying `start` or `stop`. `--timeout SECONDS` precedes the command (default 45,
+maximum 300). `sources` lists available display and window metadata.
+
+Client protocol checks: `python3 -m unittest discover -s tests -v`.

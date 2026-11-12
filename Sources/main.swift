@@ -3,6 +3,7 @@ import ScreenCaptureKit
 import UniformTypeIdentifiers
 import ApplicationServices
 import AVFoundation
+import AVKit
 
 // MARK: - Annotations
 
@@ -681,19 +682,176 @@ final class HistoryStore {
 
 // MARK: - History window
 
-final class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
+/// Draws a capture scaled to fit, never upscaled past its natural point size,
+/// with rounded corners and a soft shadow. It has no intrinsic size, so a
+/// 3000 px screenshot can't force the window to grow.
+private final class PreviewStageView: NSView {
+    private let shadowLayer = CALayer()
+    private let imageLayer = CALayer()
+
+    var image: CGImage? {
+        didSet {
+            imageLayer.contents = image
+            shadowLayer.isHidden = image == nil
+            needsLayout = true
+        }
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        shadowLayer.shadowColor = NSColor.black.cgColor
+        shadowLayer.shadowOpacity = 0.22
+        shadowLayer.shadowRadius = 14
+        shadowLayer.shadowOffset = CGSize(width: 0, height: -4)
+        imageLayer.cornerRadius = 8
+        imageLayer.masksToBounds = true
+        imageLayer.borderWidth = 0.5
+        imageLayer.contentsGravity = .resize
+        imageLayer.minificationFilter = .trilinear
+        shadowLayer.addSublayer(imageLayer)
+        layer?.addSublayer(shadowLayer)
+        shadowLayer.isHidden = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard let image, bounds.width > 0, bounds.height > 0 else { return }
+        let backing = window?.backingScaleFactor ?? 2
+        let natural = CGSize(width: CGFloat(image.width) / backing, height: CGFloat(image.height) / backing)
+        let scale = min(1, bounds.width / natural.width, bounds.height / natural.height)
+        let size = CGSize(width: floor(natural.width * scale), height: floor(natural.height * scale))
+        let rect = CGRect(x: floor((bounds.width - size.width) / 2),
+                          y: floor((bounds.height - size.height) / 2),
+                          width: size.width, height: size.height)
+        shadowLayer.frame = rect
+        shadowLayer.shadowPath = CGPath(roundedRect: CGRect(origin: .zero, size: size),
+                                        cornerWidth: 8, cornerHeight: 8, transform: nil)
+        imageLayer.frame = CGRect(origin: .zero, size: size)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            imageLayer.borderColor = NSColor.separatorColor.cgColor
+        }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsLayout = true
+    }
+}
+
+private final class HistoryTableView: NSTableView {
+    var onDelete: (() -> Void)?
+    var onCopy: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        switch event.keyCode {
+        case 51, 117: onDelete?()                       // delete, forward delete
+        case 36, 76: onCopy?()                          // return, enter
+        case 8 where flags == .command: onCopy?()       // ⌘C
+        default: super.keyDown(with: event)
+        }
+    }
+}
+
+private final class HistoryCellView: NSTableCellView {
+    static let id = NSUserInterfaceItemIdentifier("historyCell")
+    let thumb = NSView()
+    let play = NSImageView()
+    let title = NSTextField(labelWithString: "")
+    let subtitle = NSTextField(labelWithString: "")
+
+    init() {
+        super.init(frame: .zero)
+        identifier = Self.id
+        thumb.wantsLayer = true
+        thumb.layer?.cornerRadius = 5
+        thumb.layer?.masksToBounds = true
+        thumb.layer?.borderWidth = 0.5
+        thumb.layer?.contentsGravity = .resizeAspectFill
+        thumb.translatesAutoresizingMaskIntoConstraints = false
+
+        play.image = NSImage(systemSymbolName: "play.fill", accessibilityDescription: "Recording")
+        play.symbolConfiguration = .init(pointSize: 11, weight: .semibold)
+        play.contentTintColor = .white
+        play.shadow = { let s = NSShadow(); s.shadowBlurRadius = 3; s.shadowColor = .black.withAlphaComponent(0.6); return s }()
+        play.translatesAutoresizingMaskIntoConstraints = false
+
+        title.font = .systemFont(ofSize: 13, weight: .medium)
+        title.lineBreakMode = .byTruncatingTail
+        subtitle.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        subtitle.textColor = .secondaryLabelColor
+        subtitle.lineBreakMode = .byTruncatingTail
+        let text = NSStackView(views: [title, subtitle])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 1
+        text.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(thumb)
+        addSubview(play)
+        addSubview(text)
+        NSLayoutConstraint.activate([
+            thumb.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            thumb.centerYAnchor.constraint(equalTo: centerYAnchor),
+            thumb.widthAnchor.constraint(equalToConstant: 60),
+            thumb.heightAnchor.constraint(equalToConstant: 38),
+            play.centerXAnchor.constraint(equalTo: thumb.centerXAnchor),
+            play.centerYAnchor.constraint(equalTo: thumb.centerYAnchor),
+            text.leadingAnchor.constraint(equalTo: thumb.trailingAnchor, constant: 10),
+            text.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -4),
+            text.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func setThumbnail(_ image: CGImage?) {
+        thumb.layer?.contents = image
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            thumb.layer?.borderColor = NSColor.separatorColor.cgColor
+            thumb.layer?.backgroundColor = NSColor.quaternaryLabelColor.cgColor
+        }
+    }
+}
+
+final class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource,
+                                     NSTableViewDelegate, NSToolbarDelegate, NSMenuDelegate {
     static var shared: HistoryWindowController?
 
+    private enum Row {
+        case header(String)
+        case item(HistoryItem)
+    }
+
+    private static let copyID = NSToolbarItem.Identifier("copy")
+    private static let revealID = NSToolbarItem.Identifier("reveal")
+    private static let deleteID = NSToolbarItem.Identifier("delete")
+
     private var window: NSWindow!
-    private var tableView: NSTableView!
-    private var previewView: NSImageView!
+    private var tableView: HistoryTableView!
+    private var stage: PreviewStageView!
+    private var playerView: AVPlayerView!
     private var infoLabel: NSTextField!
-    private var copyButton: NSButton!
-    private var revealButton: NSButton!
-    private var deleteButton: NSButton!
-    private var emptyLabel: NSTextField!
+    private var emptyState: NSStackView!
+    private var emptyTitle: NSTextField!
+    private var emptyDetail: NSTextField!
+    private var toolbarItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
+
     private var items: [HistoryItem] = []
-    private var thumbnails: [URL: NSImage] = [:]
+    private var rows: [Row] = []
+    private var thumbnails: [URL: CGImage] = [:]
+    private var pendingThumbnails: Set<URL> = []
+    private var detailToken = UUID()
 
     static func show() {
         if shared == nil { shared = HistoryWindowController() }
@@ -709,168 +867,351 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewData
         reload()
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(tableView)
     }
 
+    // MARK: Layout
+
     private func buildWindow() {
-        let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 480),
-                           styleMask: [.titled, .closable, .resizable],
+        let split = NSSplitViewController()
+        split.splitView.isVertical = true
+        split.splitView.dividerStyle = .thin
+
+        let sidebarVC = NSViewController()
+        sidebarVC.view = buildSidebar()
+        let sidebar = NSSplitViewItem(sidebarWithViewController: sidebarVC)
+        sidebar.minimumThickness = 220
+        sidebar.maximumThickness = 340
+        sidebar.canCollapse = false
+        split.addSplitViewItem(sidebar)
+
+        let detailVC = NSViewController()
+        detailVC.view = buildDetail()
+        let detail = NSSplitViewItem(viewController: detailVC)
+        detail.minimumThickness = 340
+        split.addSplitViewItem(detail)
+
+        let win = NSWindow(contentRect: .zero,
+                           styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                            backing: .buffered, defer: false)
+        win.contentViewController = split
         win.title = "History"
+        win.toolbarStyle = .unified
         win.isReleasedWhenClosed = false
-        win.minSize = NSSize(width: 600, height: 360)
-        win.center()
+        win.minSize = NSSize(width: 600, height: 380)
         win.delegate = self
+
+        let toolbar = NSToolbar(identifier: "QuickShotHistoryToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        win.toolbar = toolbar
+
+        // Default to a comfortable size that always fits the current screen,
+        // then let any size the user picked previously win.
+        let visible = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        win.setContentSize(NSSize(width: min(900, visible.width * 0.8),
+                                  height: min(580, visible.height * 0.8)))
+        win.center()
+        win.setFrameAutosaveName("QuickShotHistory")
+        if !visible.contains(win.frame) {
+            let size = NSSize(width: min(win.frame.width, visible.width),
+                              height: min(win.frame.height, visible.height))
+            win.setFrame(NSRect(origin: win.frame.origin, size: size), display: false)
+            win.center()
+        }
+        split.splitView.autosaveName = "QuickShotHistorySplit"
         window = win
+    }
 
-        let content = NSView()
-        win.contentView = content
-
+    private func buildSidebar() -> NSView {
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("item"))
-        let table = NSTableView()
+        column.resizingMask = .autoresizingMask
+        let table = HistoryTableView()
         table.addTableColumn(column)
         table.headerView = nil
-        table.rowHeight = 56
-        table.style = .inset
+        table.style = .sourceList
+        table.rowHeight = 52
+        table.backgroundColor = .clear
+        table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
         table.dataSource = self
         table.delegate = self
-        table.doubleAction = #selector(copySelected)
         table.target = self
+        table.doubleAction = #selector(copySelected)
+        table.onCopy = { [weak self] in self?.copySelected() }
+        table.onDelete = { [weak self] in self?.deleteSelected() }
+        let menu = NSMenu()
+        menu.delegate = self
+        table.menu = menu
         tableView = table
 
         let scroll = NSScrollView()
         scroll.documentView = table
         scroll.hasVerticalScroller = true
-        scroll.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(scroll)
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = false
+        return scroll
+    }
 
-        let preview = NSImageView()
-        preview.imageScaling = .scaleProportionallyDown
-        preview.imageFrameStyle = .none
-        preview.wantsLayer = true
-        preview.layer?.backgroundColor = NSColor.quaternaryLabelColor.withAlphaComponent(0.06).cgColor
-        preview.layer?.cornerRadius = 8
-        preview.translatesAutoresizingMaskIntoConstraints = false
-        previewView = preview
-        content.addSubview(preview)
+    private func buildDetail() -> NSView {
+        let content = NSView()
+
+        let stage = PreviewStageView()
+        stage.translatesAutoresizingMaskIntoConstraints = false
+        self.stage = stage
+        content.addSubview(stage)
+
+        let player = AVPlayerView()
+        player.controlsStyle = .inline
+        player.wantsLayer = true
+        player.layer?.cornerRadius = 8
+        player.layer?.masksToBounds = true
+        player.isHidden = true
+        player.translatesAutoresizingMaskIntoConstraints = false
+        playerView = player
+        content.addSubview(player)
 
         let info = NSTextField(labelWithString: "")
-        info.font = .systemFont(ofSize: 12)
+        info.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         info.textColor = .secondaryLabelColor
-        info.lineBreakMode = .byWordWrapping
-        info.maximumNumberOfLines = 3
+        info.alignment = .center
+        info.lineBreakMode = .byTruncatingMiddle
+        info.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         info.translatesAutoresizingMaskIntoConstraints = false
         infoLabel = info
         content.addSubview(info)
 
-        let copy = NSButton(title: "Copy", target: self, action: #selector(copySelected))
-        copy.bezelStyle = .rounded
-        copy.keyEquivalent = "\r"
-        copyButton = copy
-        let reveal = NSButton(title: "Reveal in Finder", target: self, action: #selector(revealSelected))
-        reveal.bezelStyle = .rounded
-        revealButton = reveal
-        let delete = NSButton(title: "Delete", target: self, action: #selector(deleteSelected))
-        delete.bezelStyle = .rounded
-        deleteButton = delete
-        let buttons = NSStackView(views: [copy, reveal, delete])
-        buttons.orientation = .horizontal
-        buttons.spacing = 8
-        buttons.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(buttons)
-
-        let empty = NSTextField(labelWithString: "No captures yet")
-        empty.font = .systemFont(ofSize: 13)
-        empty.textColor = .tertiaryLabelColor
+        let icon = NSImageView(image: NSImage(systemSymbolName: "photo.on.rectangle.angled",
+                                              accessibilityDescription: nil) ?? NSImage())
+        icon.symbolConfiguration = .init(pointSize: 36, weight: .light)
+        icon.contentTintColor = .tertiaryLabelColor
+        let emptyTitle = NSTextField(labelWithString: "")
+        emptyTitle.font = .systemFont(ofSize: 15, weight: .semibold)
+        emptyTitle.textColor = .secondaryLabelColor
+        let emptyDetail = NSTextField(wrappingLabelWithString: "")
+        emptyDetail.font = .systemFont(ofSize: 12)
+        emptyDetail.textColor = .tertiaryLabelColor
+        emptyDetail.alignment = .center
+        emptyDetail.preferredMaxLayoutWidth = 260
+        let empty = NSStackView(views: [icon, emptyTitle, emptyDetail])
+        empty.orientation = .vertical
+        empty.spacing = 6
+        empty.setCustomSpacing(12, after: icon)
         empty.translatesAutoresizingMaskIntoConstraints = false
-        emptyLabel = empty
+        self.emptyState = empty
+        self.emptyTitle = emptyTitle
+        self.emptyDetail = emptyDetail
         content.addSubview(empty)
 
+        let safe = content.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            scroll.topAnchor.constraint(equalTo: content.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            scroll.widthAnchor.constraint(equalToConstant: 280),
+            stage.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 28),
+            stage.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -28),
+            stage.topAnchor.constraint(equalTo: safe.topAnchor, constant: 24),
+            stage.bottomAnchor.constraint(equalTo: info.topAnchor, constant: -16),
 
-            preview.leadingAnchor.constraint(equalTo: scroll.trailingAnchor, constant: 16),
-            preview.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            preview.topAnchor.constraint(equalTo: content.topAnchor, constant: 16),
+            player.leadingAnchor.constraint(equalTo: stage.leadingAnchor),
+            player.trailingAnchor.constraint(equalTo: stage.trailingAnchor),
+            player.topAnchor.constraint(equalTo: stage.topAnchor),
+            player.bottomAnchor.constraint(equalTo: stage.bottomAnchor),
 
-            info.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
-            info.trailingAnchor.constraint(equalTo: preview.trailingAnchor),
-            info.topAnchor.constraint(equalTo: preview.bottomAnchor, constant: 12),
-
-            buttons.leadingAnchor.constraint(equalTo: preview.leadingAnchor),
-            buttons.topAnchor.constraint(equalTo: info.bottomAnchor, constant: 12),
-            buttons.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
+            info.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            info.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+            info.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -16),
 
             empty.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-            empty.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            empty.centerYAnchor.constraint(equalTo: safe.centerYAnchor),
         ])
+        return content
     }
+
+    // MARK: Data
 
     func reload() {
         let selectedURL = selectedItem()?.url
         items = HistoryStore.shared.items()
-        thumbnails = thumbnails.filter { pair in items.contains { $0.url == pair.key } }
+        let live = Set(items.map(\.url))
+        thumbnails = thumbnails.filter { live.contains($0.key) }
+
+        let calendar = Calendar.current
+        let dayFormatter = DateFormatter()
+        dayFormatter.setLocalizedDateFormatFromTemplate("EEEE d MMM")
+        var built: [Row] = []
+        var lastDay: Date?
+        for item in items {
+            let day = calendar.startOfDay(for: item.date)
+            if day != lastDay {
+                let label: String
+                if calendar.isDateInToday(day) { label = "Today" }
+                else if calendar.isDateInYesterday(day) { label = "Yesterday" }
+                else { label = dayFormatter.string(from: day) }
+                built.append(.header(label))
+                lastDay = day
+            }
+            built.append(.item(item))
+        }
+        rows = built
         tableView.reloadData()
-        emptyLabel.isHidden = !items.isEmpty
-        if let selectedURL, let idx = items.firstIndex(where: { $0.url == selectedURL }) {
-            tableView.selectRowIndexes(IndexSet(integer: idx), byExtendingSelection: false)
-        } else if !items.isEmpty {
-            tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+
+        let shots = items.filter { !$0.isVideo }.count
+        let videos = items.count - shots
+        var counts: [String] = []
+        if shots > 0 { counts.append("\(shots) screenshot\(shots == 1 ? "" : "s")") }
+        if videos > 0 { counts.append("\(videos) recording\(videos == 1 ? "" : "s")") }
+        window.subtitle = counts.joined(separator: ", ")
+
+        if let selectedURL, let idx = rowIndex(for: selectedURL) {
+            select(row: idx)
+        } else if let first = rows.firstIndex(where: { if case .item = $0 { return true }; return false }) {
+            select(row: first)
         }
         updateDetail()
     }
 
-    private func selectedItem() -> HistoryItem? {
-        let row = tableView?.selectedRow ?? -1
-        guard row >= 0, row < items.count else { return nil }
-        return items[row]
+    private func rowIndex(for url: URL) -> Int? {
+        rows.firstIndex { if case .item(let i) = $0 { return i.url == url }; return false }
     }
 
-    private func thumbnail(for item: HistoryItem) -> NSImage? {
+    private func select(row: Int) {
+        tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        tableView.scrollRowToVisible(row)
+    }
+
+    private func item(at row: Int) -> HistoryItem? {
+        guard row >= 0, row < rows.count, case .item(let item) = rows[row] else { return nil }
+        return item
+    }
+
+    private func selectedItem() -> HistoryItem? {
+        item(at: tableView?.selectedRow ?? -1)
+    }
+
+    /// The row a context menu was opened on, falling back to the selection.
+    private func actionItem() -> HistoryItem? {
+        let clicked = tableView.clickedRow
+        return clicked >= 0 ? item(at: clicked) : selectedItem()
+    }
+
+    private func thumbnail(for item: HistoryItem) -> CGImage? {
         if let cached = thumbnails[item.url] { return cached }
-        var image: NSImage?
-        if item.isVideo {
-            let gen = AVAssetImageGenerator(asset: AVURLAsset(url: item.url))
-            gen.appliesPreferredTrackTransform = true
-            gen.maximumSize = CGSize(width: 480, height: 480)
-            if let cg = try? gen.copyCGImage(at: .zero, actualTime: nil) {
-                image = NSImage(cgImage: cg, size: .zero)
+        guard !pendingThumbnails.contains(item.url) else { return nil }
+        pendingThumbnails.insert(item.url)
+        Task {
+            let image = await Self.loadImage(item, maxPixel: 240)
+            await MainActor.run {
+                self.pendingThumbnails.remove(item.url)
+                guard let image else { return }
+                self.thumbnails[item.url] = image
+                if let row = self.rowIndex(for: item.url),
+                   let cell = self.tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? HistoryCellView {
+                    cell.setThumbnail(image)
+                }
             }
-        } else {
-            image = NSImage(contentsOf: item.url)
         }
-        if let image { thumbnails[item.url] = image }
-        return image
+        return nil
+    }
+
+    private static func loadImage(_ item: HistoryItem, maxPixel: Int) async -> CGImage? {
+        if item.isVideo {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: item.url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: maxPixel, height: maxPixel)
+            return try? await generator.image(at: .zero).image
+        }
+        return await Task.detached(priority: .userInitiated) {
+            guard let source = CGImageSourceCreateWithURL(item.url as CFURL, nil) else { return nil }
+            let options: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            ]
+            return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        }.value
     }
 
     private func updateDetail() {
+        let token = UUID()
+        detailToken = token
+        let hasItem = selectedItem() != nil
+        for id in [Self.copyID, Self.revealID, Self.deleteID] { toolbarItems[id]?.isEnabled = hasItem }
+
+        emptyState.isHidden = !items.isEmpty
+        if items.isEmpty {
+            let enabled = HistoryStore.shared.isEnabled
+            emptyTitle.stringValue = enabled ? "No captures yet" : "History is off"
+            emptyDetail.stringValue = enabled
+                ? "Screenshots and recordings you take will show up here."
+                : "Turn on Keep History in the QuickShot menu to save captures here."
+        }
+
         guard let item = selectedItem() else {
-            previewView.image = nil
+            stage.image = nil
+            playerView.player?.pause()
+            playerView.player = nil
+            playerView.isHidden = true
             infoLabel.stringValue = ""
-            for b in [copyButton, revealButton, deleteButton] { b?.isEnabled = false }
             return
         }
-        for b in [copyButton, revealButton, deleteButton] { b?.isEnabled = true }
-        previewView.image = thumbnail(for: item)
 
         let df = DateFormatter()
         df.dateStyle = .medium
         df.timeStyle = .short
-        var parts = [df.string(from: item.date)]
-        if let image = previewView.image, let rep = image.representations.first, rep.pixelsWide > 0 {
-            parts.append("\(rep.pixelsWide) × \(rep.pixelsHigh) px")
+        let date = df.string(from: item.date)
+        let size = (try? item.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+            .map { ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) }
+
+        if item.isVideo {
+            stage.image = nil
+            playerView.isHidden = false
+            if (playerView.player?.currentItem?.asset as? AVURLAsset)?.url != item.url {
+                playerView.player?.pause()
+                playerView.player = AVPlayer(url: item.url)
+            }
+            infoLabel.stringValue = ([date] + [size].compactMap { $0 }).joined(separator: "  ·  ")
+            Task {
+                let asset = AVURLAsset(url: item.url)
+                guard let duration = try? await asset.load(.duration) else { return }
+                let track = try? await asset.loadTracks(withMediaType: .video).first
+                let natural = try? await track?.load(.naturalSize)
+                await MainActor.run {
+                    guard self.detailToken == token else { return }
+                    var parts = [date]
+                    if let natural { parts.append("\(Int(natural.width)) × \(Int(natural.height))") }
+                    let secs = Int(duration.seconds.rounded())
+                    parts.append(String(format: "%d:%02d", secs / 60, secs % 60))
+                    if let size { parts.append(size) }
+                    self.infoLabel.stringValue = parts.joined(separator: "  ·  ")
+                }
+            }
+        } else {
+            playerView.player?.pause()
+            playerView.player = nil
+            playerView.isHidden = true
+            stage.image = thumbnails[item.url]  // instant low-res stand-in
+            var parts = [date]
+            if let source = CGImageSourceCreateWithURL(item.url as CFURL, nil),
+               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+               let w = props[kCGImagePropertyPixelWidth] as? Int,
+               let h = props[kCGImagePropertyPixelHeight] as? Int {
+                parts.append("\(w) × \(h)")
+            }
+            if let size { parts.append(size) }
+            infoLabel.stringValue = parts.joined(separator: "  ·  ")
+            Task {
+                let image = await Self.loadImage(item, maxPixel: 3200)
+                await MainActor.run {
+                    guard self.detailToken == token, let image else { return }
+                    self.stage.image = image
+                }
+            }
         }
-        if let size = (try? item.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
-            parts.append(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))
-        }
-        if item.isVideo { parts.append("MP4 (copies as a file)") }
-        infoLabel.stringValue = parts.joined(separator: "   ·   ")
     }
 
+    // MARK: Actions
+
     @objc private func copySelected() {
-        guard let item = selectedItem() else { return }
+        guard let item = actionItem() else { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         if item.isVideo {
@@ -879,61 +1220,150 @@ final class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewData
             pb.writeObjects([image])
             pb.setData(png, forType: .png)
         }
+        if let copy = toolbarItems[Self.copyID] {
+            copy.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: "Copied")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                copy.image = NSImage(systemSymbolName: "doc.on.doc", accessibilityDescription: "Copy")
+            }
+        }
     }
 
     @objc private func revealSelected() {
-        guard let item = selectedItem() else { return }
+        guard let item = actionItem() else { return }
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
     }
 
     @objc private func deleteSelected() {
-        guard let item = selectedItem() else { return }
+        guard let item = actionItem() else { return }
+        // Keep the selection in place: move to the next capture, or the previous one at the end.
+        let flat = items.map(\.url)
+        let next = flat.firstIndex(of: item.url).flatMap { idx -> URL? in
+            if idx + 1 < flat.count { return flat[idx + 1] }
+            return idx > 0 ? flat[idx - 1] : nil
+        }
+        if item.isVideo, (playerView.player?.currentItem?.asset as? AVURLAsset)?.url == item.url {
+            playerView.player?.pause()
+            playerView.player = nil
+        }
         HistoryStore.shared.delete(item)
+        tableView.deselectAll(nil)
         reload()
+        if let next, let idx = rowIndex(for: next) { select(row: idx) }
+    }
+
+    @objc private func clearAll() {
+        let alert = NSAlert()
+        alert.messageText = "Delete all captures?"
+        alert.informativeText = "This removes every screenshot and recording in History. It can't be undone."
+        alert.addButton(withTitle: "Delete All")
+        alert.addButton(withTitle: "Cancel")
+        alert.buttons.first?.hasDestructiveAction = true
+        alert.beginSheetModal(for: window) { response in
+            guard response == .alertFirstButtonReturn else { return }
+            self.playerView.player?.pause()
+            self.playerView.player = nil
+            HistoryStore.shared.clear()
+            self.reload()
+        }
+    }
+
+    // MARK: Context menu
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard item(at: tableView.clickedRow) != nil else { return }
+        menu.addItem(withTitle: "Copy", action: #selector(copySelected), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Show in Finder", action: #selector(revealSelected), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Delete", action: #selector(deleteSelected), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Delete All…", action: #selector(clearAll), keyEquivalent: "").target = self
+    }
+
+    // MARK: Toolbar
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.sidebarTrackingSeparator, .flexibleSpace, Self.copyID, Self.revealID, Self.deleteID]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        let specs: [NSToolbarItem.Identifier: (String, String, Selector)] = [
+            Self.copyID: ("Copy", "doc.on.doc", #selector(copySelected)),
+            Self.revealID: ("Show in Finder", "folder", #selector(revealSelected)),
+            Self.deleteID: ("Delete", "trash", #selector(deleteSelected)),
+        ]
+        guard let (label, symbol, action) = specs[id] else { return nil }
+        let item = NSToolbarItem(itemIdentifier: id)
+        item.label = label
+        item.toolTip = label
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        item.isBordered = true
+        item.target = self
+        item.action = action
+        item.autovalidates = false
+        toolbarItems[id] = item
+        return item
+    }
+
+    // MARK: Window
+
+    func windowWillClose(_ notification: Notification) {
+        playerView.player?.pause()
     }
 
     // MARK: Table
 
-    func numberOfRows(in tableView: NSTableView) -> Int { items.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+
+    func tableView(_ tableView: NSTableView, isGroupRow row: Int) -> Bool {
+        if case .header = rows[row] { return true }
+        return false
+    }
+
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool {
+        item(at: row) != nil
+    }
+
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
+        if case .header = rows[row] { return 28 }
+        return 52
+    }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        let id = NSUserInterfaceItemIdentifier("cell")
-        let item = items[row]
-        let cell: NSTableCellView
-        if let reused = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView {
-            cell = reused
-        } else {
-            cell = NSTableCellView()
-            cell.identifier = id
-            let iv = NSImageView()
-            iv.imageScaling = .scaleProportionallyDown
-            iv.wantsLayer = true
-            iv.layer?.cornerRadius = 4
-            iv.layer?.masksToBounds = true
-            iv.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(iv)
-            cell.imageView = iv
-            let tf = NSTextField(labelWithString: "")
-            tf.font = .systemFont(ofSize: 12)
-            tf.lineBreakMode = .byTruncatingTail
-            tf.translatesAutoresizingMaskIntoConstraints = false
-            cell.addSubview(tf)
-            cell.textField = tf
-            NSLayoutConstraint.activate([
-                iv.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-                iv.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-                iv.widthAnchor.constraint(equalToConstant: 72),
-                iv.heightAnchor.constraint(equalToConstant: 48),
-                tf.leadingAnchor.constraint(equalTo: iv.trailingAnchor, constant: 8),
-                tf.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),
-                tf.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-            ])
+        switch rows[row] {
+        case .header(let label):
+            let id = NSUserInterfaceItemIdentifier("historyHeader")
+            let cell = tableView.makeView(withIdentifier: id, owner: nil) as? NSTableCellView ?? {
+                let c = NSTableCellView()
+                c.identifier = id
+                let tf = NSTextField(labelWithString: "")
+                tf.translatesAutoresizingMaskIntoConstraints = false
+                c.addSubview(tf)
+                c.textField = tf
+                NSLayoutConstraint.activate([
+                    tf.leadingAnchor.constraint(equalTo: c.leadingAnchor, constant: 2),
+                    tf.centerYAnchor.constraint(equalTo: c.centerYAnchor),
+                ])
+                return c
+            }()
+            cell.textField?.stringValue = label
+            return cell
+        case .item(let item):
+            let cell = tableView.makeView(withIdentifier: HistoryCellView.id, owner: nil) as? HistoryCellView
+                ?? HistoryCellView()
+            let df = DateFormatter()
+            df.timeStyle = .short
+            df.dateStyle = .none
+            cell.title.stringValue = item.isVideo ? "Recording" : "Screenshot"
+            cell.subtitle.stringValue = df.string(from: item.date)
+            cell.play.isHidden = !item.isVideo
+            cell.setThumbnail(thumbnail(for: item))
+            return cell
         }
-        cell.imageView?.image = thumbnail(for: item)
-        let df = DateFormatter()
-        df.dateFormat = "MMM d, HH:mm"
-        cell.textField?.stringValue = (item.isVideo ? "🎬 " : "") + df.string(from: item.date)
-        return cell
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -965,18 +1395,37 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
     private var recordingOutput: SCRecordingOutput?
     private var stopping = false
     private var finalized = false
+    private var startedAt: Date?
+    private var controlReply: (([String: Any]) -> Void)?
+    var controlStops: [([String: Any]) -> Void] = []
+    private var markers: [[String: Any]] = []
+    private var automated = false
+
+    var controlStatus: [String: Any] {
+        ["state": finalized ? "finished" : (stopping ? "stopping" : (startedAt == nil ? "starting" : "recording")),
+         "path": fileURL.path, "elapsed": startedAt.map { Date().timeIntervalSince($0) } ?? 0,
+         "markers": markers]
+    }
+
+    func mark(_ label: String) -> [String: Any] {
+        let seconds = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+        markers.append(["label": label, "seconds": seconds])
+        return ["ok": true, "seconds": seconds, "label": label]
+    }
 
     static func begin(displayID: CGDirectDisplayID, sourceRect: CGRect,
-                      pixelSize: CGSize, globalRegion: NSRect) {
+                      pixelSize: CGSize, globalRegion: NSRect, output: URL? = nil,
+                      controlReply: (([String: Any]) -> Void)? = nil) {
         guard current == nil else { return }
         let session = RecordingSession(displayID: displayID, sourceRect: sourceRect,
-                                       pixelSize: pixelSize, globalRegion: globalRegion)
+                                       pixelSize: pixelSize, globalRegion: globalRegion, output: output, controlReply: controlReply)
         current = session
         session.start()
     }
 
     private init(displayID: CGDirectDisplayID, sourceRect: CGRect,
-                 pixelSize: CGSize, globalRegion: NSRect) {
+                 pixelSize: CGSize, globalRegion: NSRect, output: URL?,
+                 controlReply: (([String: Any]) -> Void)?) {
         self.displayID = displayID
         self.sourceRect = sourceRect
         self.pixelSize = pixelSize
@@ -984,7 +1433,9 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
         let df = DateFormatter()
         df.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
         let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!
-        fileURL = desktop.appendingPathComponent("Recording \(df.string(from: Date())).mp4")
+        fileURL = output ?? desktop.appendingPathComponent("Recording \(df.string(from: Date())).mp4")
+        self.controlReply = controlReply
+        self.automated = output != nil
 
         // The border sits entirely outside the recorded region so it never
         // appears in the video.
@@ -1040,6 +1491,9 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
     }
 
     private func didStart() {
+        startedAt = Date()
+        controlReply?(["ok": true, "state": "recording", "path": fileURL.path])
+        controlReply = nil
         borderWindow.orderFrontRegardless()
         AppDelegate.shared?.setRecording(true)
     }
@@ -1047,9 +1501,9 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
     func stop() {
         guard !stopping else { return }
         stopping = true
-        stream?.stopCapture { _ in
-            // didFinishRecording normally lands first; this is the backstop.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { self.finishRecording() }
+        stream?.stopCapture { error in
+            if let error { DispatchQueue.main.async { self.fail(error) } }
+            // Only SCRecordingOutput's finalization callback confirms a complete MP4.
         }
     }
 
@@ -1073,7 +1527,21 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
         borderWindow.orderOut(nil)
         AppDelegate.shared?.setRecording(false)
         RecordingSession.current = nil
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            let result: [String: Any] = ["ok": false, "state": "failed", "error": "Recording file is missing"]
+            AutomationControl.shared.lastResult = result
+            controlStops.forEach { $0(result) }
+            return
+        }
+        let result: [String: Any] = ["ok": true, "state": "finished", "path": fileURL.path,
+            "duration": startedAt.map { Date().timeIntervalSince($0) } ?? 0, "markers": markers]
+        if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: fileURL.path + ".markers.json"), options: .atomic)
+        }
+        AutomationControl.shared.lastResult = result
+        controlStops.forEach { $0(result) }
+        controlStops.removeAll()
+        if automated { return }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.writeObjects([fileURL as NSURL])
@@ -1085,9 +1553,17 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
     private func fail(_ error: Error?) {
         guard !finalized else { return }
         finalized = true
+        stream?.stopCapture { _ in }
         borderWindow.orderOut(nil)
         AppDelegate.shared?.setRecording(false)
         RecordingSession.current = nil
+        let result: [String: Any] = ["ok": false, "state": "failed", "error": error?.localizedDescription ?? "Unknown error"]
+        AutomationControl.shared.lastResult = result
+        controlReply?(result)
+        controlReply = nil
+        controlStops.forEach { $0(result) }
+        controlStops.removeAll()
+        if automated { return }
         let alert = NSAlert()
         alert.messageText = "Recording failed"
         alert.informativeText = error?.localizedDescription ?? "Unknown error"
@@ -1399,6 +1875,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         AXIsProcessTrustedWithOptions(options)
 
         installHotkey()
+        AutomationControl.shared.install()
+        if CommandLine.arguments.contains("--show-history") { showHistory() }
     }
 
     @objc func captureFromMenu() {

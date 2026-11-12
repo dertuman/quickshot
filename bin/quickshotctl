@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Control the running QuickShot app without keystrokes. Uses a same-user mailbox."""
+import argparse, json, os, pathlib, sys, time, uuid
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--timeout', type=float, default=45)
+    commands = parser.add_subparsers(dest='command', required=True)
+    for command in ('status', 'sources', 'stop'): commands.add_parser(command)
+    marker = commands.add_parser('mark'); marker.add_argument('label')
+    start = commands.add_parser('start')
+    target = start.add_mutually_exclusive_group(required=True)
+    target.add_argument('--window', type=int)
+    target.add_argument('--display', type=int)
+    start.add_argument('--rect', type=float, nargs=4, metavar=('X','Y','WIDTH','HEIGHT'))
+    start.add_argument('--insets', type=float, nargs=4, default=[0,0,0,0], metavar=('TOP','RIGHT','BOTTOM','LEFT'))
+    start.add_argument('--output', required=True)
+    args = vars(parser.parse_args()); timeout = args.pop('timeout')
+    if not 0 < timeout <= 300: parser.error('timeout must be between 0 and 300 seconds')
+    if args['command'] == 'start':
+        if args.get('display') is not None and args.get('rect') is None: parser.error('--display requires --rect')
+        if args.get('window') is not None and args.get('rect') is not None: parser.error('--window uses --insets, not --rect')
+        args['output'] = str(pathlib.Path(args['output']).expanduser().absolute())
+    root = pathlib.Path.home() / 'Library/Application Support/QuickShot/Control'
+    root.mkdir(parents=True, exist_ok=True, mode=0o700); root.chmod(0o700)
+    key = str(uuid.uuid4()); request = root / (key + '.request.json'); response = root / (key + '.response.json')
+    args = {k:v for k,v in args.items() if v is not None}
+    args['expires'] = time.time() + timeout
+    temporary = root / (key + '.tmp')
+    fd=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+    with os.fdopen(fd,'w') as f: json.dump(args,f,allow_nan=False)
+    temporary.rename(request)
+    deadline = time.monotonic()+timeout
+    try:
+        while time.monotonic() < deadline:
+            if response.exists():
+                result=json.loads(response.read_text()); print(json.dumps(result,ensure_ascii=False))
+                return 0 if result.get('ok') else 1
+            time.sleep(.1)
+        print(json.dumps({'ok':False,'error':'QuickShot did not respond. Start the updated app. For an uncertain start/stop, inspect status before retrying.'}),file=sys.stderr)
+        return 1
+    finally:
+        request.unlink(missing_ok=True); response.unlink(missing_ok=True)
+
+if __name__=='__main__': sys.exit(main())

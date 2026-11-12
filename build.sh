@@ -6,7 +6,8 @@ APP=build/QuickShot.app
 rm -rf build
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/QuickShot" Sources/main.swift
+swiftc -O -swift-version 5 -o "$APP/Contents/MacOS/QuickShot" Sources/*.swift
+cp bin/quickshotctl "$APP/Contents/Resources/quickshotctl"
 cp Info.plist "$APP/Contents/Info.plist"
 cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # A stable signing identity keeps the Screen Recording grant across rebuilds.
