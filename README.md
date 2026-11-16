@@ -26,7 +26,7 @@ Prefer building from source? `git clone https://github.com/dertuman/quickshot &&
 - Grab the corner and edge handles to resize the selection. Your drawings stay pinned to the screen content while you do.
 - **Drag inside the selection to draw**: a red arrow by default. The toolbar under the selection switches tools: **Move**, **Arrow**, **Box**.
 - **Slam the spacebar** (or ⏎, ⌘C, ⌃C) and the annotated shot is on your clipboard. The whole thing is fn+⌃, drag, space. **Save…** (or ⌘S) writes a PNG instead. **Esc** bails out.
-- **Send to T3** (`T` or the **T3** button) starts a new [T3 Code](https://t3.codes) thread with the screenshot attached, in `~/Documents/GitHub` by default. Change the folder with `defaults write com.alex.quickshot T3Project /path/to/project`.
+- **Send to T3** (`T` or the **T3** button) starts a new [T3 Code](https://t3.codes) thread with the screenshot attached, in `~/Documents/GitHub` by default. Change the folder with `defaults write com.alex.quickshot T3Project /path/to/project`. The message also says which app and window the screenshot was taken in (and the page address in a browser, without its query string), and if the project has a locator at `scripts/where` it runs it on the screenshot while you type and includes where that screen is in the code, so the agent starts at the right file. Point it at another program with `defaults write com.alex.quickshot T3Locator /path/to/program`; it is called as `<program> --image <png> [--url <page>]` and its output is used when it exits 0.
 - **While recording**, the menu bar icon shows the elapsed time. Click it (or press fn+⌃) to stop.
 - **History** keeps your last 100 captures (screenshots and recordings). Open **History…** from the menu bar icon, click any shot to preview it, and hit **Copy** (or ⏎, or double-click) to put it back on your clipboard, ready to paste anywhere. Toggle **Keep History** in the menu to turn it off; nothing is stored while it's off.
 - **Record** (or R) records the selected region instead: a thin red border marks it, the menu bar icon becomes a red stop button, and fn+⌃ (or clicking it) stops. The MP4 lands on your Desktop with the file already on your clipboard, ready to paste into Slack or wherever. 60 fps, H.264, no audio, tiny files.
@@ -78,6 +78,7 @@ permission still applies; the controls do not request or bypass permissions.
 ```bash
 bin/quickshotctl sources
 bin/quickshotctl status
+bin/quickshotctl context
 bin/quickshotctl start --window 4205 --insets 87 0 0 0 --output /absolute/path/demo.mp4
 bin/quickshotctl mark 'clicked Run tests'
 bin/quickshotctl stop
@@ -107,5 +108,8 @@ owner checks and expiring requests. There is no network listener. Keep the
 updated app running. A timeout is an uncertain outcome: inspect `status` before
 retrying `start` or `stop`. `--timeout SECONDS` precedes the command (default 45,
 maximum 300). `sources` lists available display and window metadata.
+`context` reports the app, window title and page or document of the frontmost
+window (`context --app Chrome` for the frontmost window of one app): the same
+reading Send to T3 attaches.
 
 Client protocol checks: `python3 -m unittest discover -s tests -v`.

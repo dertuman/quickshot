@@ -31,6 +31,17 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(requests[0]['display'],1)
         self.assertGreater(requests[0]['expires'],time.time()-1)
 
+    def test_context_request_names_the_app_and_returns_the_reading(self):
+        result,requests=self.invoke(['context','--app','Chrome'],{'ok':True,'app':'Google Chrome','title':'Pricing','location':'localhost:3000/pricing'})
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(json.loads(result.stdout)['location'],'localhost:3000/pricing')
+        self.assertEqual(requests[0]['command'],'context')
+        self.assertEqual(requests[0]['app'],'Chrome')
+
+    def test_context_without_app_sends_no_filter(self):
+        _,requests=self.invoke(['context'],{'ok':True,'app':'Finder','title':''})
+        self.assertNotIn('app',requests[0])
+
     def test_rejection_is_not_reported_as_success(self):
         result,_=self.invoke(['stop'],{'ok':False,'error':'No recording is active'})
         self.assertEqual(result.returncode,1)

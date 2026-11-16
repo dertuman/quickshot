@@ -1680,9 +1680,9 @@ final class CaptureSession {
 
     /// Normal app windows, front to back, in global Cocoa coordinates. Read before the
     /// overlays exist so they never show up.
-    private var appWindows: [NSRect] = []
+    private var appWindows: [AppWindow] = []
 
-    private static func onScreenAppWindows() -> [NSRect] {
+    static func onScreenAppWindows() -> [AppWindow] {
         guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
               let primary = NSScreen.screens.first?.frame else { return [] }
         let me = ProcessInfo.processInfo.processIdentifier
@@ -1693,7 +1693,11 @@ final class CaptureSession {
                   let b = info[kCGWindowBounds as String] as? [String: CGFloat],
                   let x = b["X"], let y = b["Y"], let w = b["Width"], let h = b["Height"],
                   w >= 40, h >= 40 else { return nil }
-            return NSRect(x: x, y: primary.maxY - y - h, width: w, height: h)
+            return AppWindow(rect: NSRect(x: x, y: primary.maxY - y - h, width: w, height: h),
+                             bounds: CGRect(x: x, y: y, width: w, height: h),
+                             pid: info[kCGWindowOwnerPID as String] as? Int32 ?? 0,
+                             app: info[kCGWindowOwnerName as String] as? String ?? "",
+                             title: info[kCGWindowName as String] as? String ?? "")
         }
     }
 
@@ -1759,7 +1763,7 @@ final class CaptureSession {
             view.screenFrame = screen.frame
             view.backingScale = screen.backingScaleFactor
             view.windowRects = appWindows.compactMap { w in
-                let local = w.intersection(screen.frame).offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
+                let local = w.rect.intersection(screen.frame).offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
                 return local.width >= 40 && local.height >= 40 ? local : nil
             }
             win.contentView = view
@@ -1824,10 +1828,15 @@ final class CaptureSession {
     func sendToT3(from view: OverlayView) {
         guard let rep = view.renderComposite(),
               let png = rep.representation(using: .png, properties: [:]) else { return }
+        // The frontmost window under the middle of the selection is what the screenshot shows.
+        let source = view.selection.flatMap { sel -> AppWindow? in
+            let middle = NSPoint(x: view.screenFrame.minX + sel.midX, y: view.screenFrame.minY + sel.midY)
+            return appWindows.first { $0.rect.contains(middle) }
+        }
         HistoryStore.shared.saveImage(png)
         HistoryWindowController.shared?.reload()
         dismiss()
-        T3Sender.begin(png: png)
+        T3Sender.begin(png: png, source: source)
     }
 
     func startRecording(from view: OverlayView) {

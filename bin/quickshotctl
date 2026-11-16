@@ -8,6 +8,7 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     for command in ('status', 'sources', 'stop'): commands.add_parser(command)
     marker = commands.add_parser('mark'); marker.add_argument('label')
+    context = commands.add_parser('context'); context.add_argument('--app')
     start = commands.add_parser('start')
     target = start.add_mutually_exclusive_group(required=True)
     target.add_argument('--window', type=int)

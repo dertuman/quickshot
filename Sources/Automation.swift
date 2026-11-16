@@ -60,6 +60,20 @@ final class AutomationControl {
             guard let session = RecordingSession.current else { throw ControlError("No recording is active") }
             guard let label = r["label"] as? String, !label.isEmpty, label.count <= 300 else { throw ControlError("A short marker label is required") }
             reply(session.mark(label))
+        case "context":
+            // What a screenshot taken now would be of: the frontmost normal window, or the
+            // frontmost one of the named app. The same reading Send to T3 attaches.
+            let wanted = (r["app"] as? String)?.lowercased()
+            let windows = CaptureSession.onScreenAppWindows()
+            guard let window = windows.first(where: { wanted == nil || $0.app.lowercased().contains(wanted!) }) else {
+                throw ControlError(wanted == nil ? "No app window is on screen" : "No window of that app is on screen")
+            }
+            DispatchQueue.global(qos: .userInitiated).async {
+                let context = ScreenContextReader.read(window)
+                var result: [String: Any] = ["ok": true, "app": context.app, "title": context.title]
+                if let location = context.location { result["location"] = location }
+                reply(result)
+            }
         case "sources", "start":
             guard CGPreflightScreenCaptureAccess() else { throw ControlError("Grant QuickShot Screen Recording permission in System Settings, then relaunch it") }
             if r["command"] as? String == "start" {
