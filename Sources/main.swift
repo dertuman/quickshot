@@ -67,8 +67,12 @@ final class OverlayView: NSView {
     var screenFrame: NSRect = .zero
     var backingScale: CGFloat = 2
 
-    var selection: NSRect?
+    var selection: NSRect? { didSet { if selection != nil { hoverWindow = nil } } }
     var annotations: [Annotation] = []
+    /// On-screen app windows in view coordinates, front to back, for click-to-select.
+    var windowRects: [NSRect] = []
+    private var hoverWindow: NSRect?
+    private var pendingWindowClick: NSRect?
     private var draft: Annotation?
     var tool: Tool = .arrow
 
@@ -136,8 +140,25 @@ final class OverlayView: NSView {
             }
 
             drawSizeLabel(for: sel)
+        } else if let win = hoverWindow {
+            let dim = NSBezierPath(rect: bounds)
+            dim.appendRect(win)
+            dim.windingRule = .evenOdd
+            dim.fill()
+            let border = NSBezierPath(rect: win.insetBy(dx: 1, dy: 1))
+            border.lineWidth = 2
+            NSColor.white.withAlphaComponent(0.9).setStroke()
+            border.stroke()
         } else {
             NSBezierPath(rect: bounds).fill()
+        }
+    }
+
+    func updateHoverWindow(at p: NSPoint) {
+        let next = selection == nil ? windowRects.first { $0.contains(p) } : nil
+        if next != hoverWindow {
+            hoverWindow = next
+            needsDisplay = true
         }
     }
 
@@ -287,6 +308,13 @@ final class OverlayView: NSView {
         let p = convert(event.locationInWindow, from: nil)
         dragStart = p
 
+        if event.clickCount == 2, let sel = selection, sel.contains(p) {
+            draft = nil
+            dragMode = .none
+            session?.copyAndFinish(from: self)
+            return
+        }
+
         if let sel = selection {
             if let h = hitHandle(p, in: sel) {
                 dragMode = .resizing(h)
@@ -309,7 +337,8 @@ final class OverlayView: NSView {
             }
         }
 
-        // Start a fresh selection
+        // Start a fresh selection. A click without a drag selects the window under it.
+        pendingWindowClick = selection == nil ? (hoverWindow ?? windowRects.first { $0.contains(p) }) : nil
         setHovered(nil)
         session?.clearSelections(except: self)
         annotations.removeAll()
@@ -321,10 +350,10 @@ final class OverlayView: NSView {
 
     override func mouseDragged(with event: NSEvent) {
         let p = convert(event.locationInWindow, from: nil)
+        let shift = event.modifierFlags.contains(.shift)
         switch dragMode {
         case .creating:
-            selection = NSRect(x: min(dragStart.x, p.x), y: min(dragStart.y, p.y),
-                               width: abs(p.x - dragStart.x), height: abs(p.y - dragStart.y))
+            selection = Self.rect(from: dragStart, to: p, square: shift)
         case .moving:
             var r = origRect.offsetBy(dx: p.x - dragStart.x, dy: p.y - dragStart.y)
             r.origin.x = max(0, min(r.origin.x, bounds.width - r.width))
@@ -335,10 +364,9 @@ final class OverlayView: NSView {
         case .drawing:
             switch tool {
             case .arrow:
-                draft = .arrow(from: dragStart, to: p)
+                draft = .arrow(from: dragStart, to: shift ? Self.snap45(from: dragStart, to: p) : p)
             case .box:
-                draft = .box(rect: NSRect(x: min(dragStart.x, p.x), y: min(dragStart.y, p.y),
-                                          width: abs(p.x - dragStart.x), height: abs(p.y - dragStart.y)))
+                draft = .box(rect: Self.rect(from: dragStart, to: p, square: shift))
             case .move:
                 break
             }
@@ -352,8 +380,9 @@ final class OverlayView: NSView {
         switch dragMode {
         case .creating:
             if let sel = selection, sel.width < 5 || sel.height < 5 {
-                selection = nil
+                selection = pendingWindowClick.map { $0.intersection(bounds) }
             }
+            pendingWindowClick = nil
         case .drawing:
             if let d = draft {
                 let keep: Bool
@@ -370,11 +399,30 @@ final class OverlayView: NSView {
         dragMode = .none
         popCursorIfNeeded()
         let p = convert(event.locationInWindow, from: nil)
-        setHovered(selection.flatMap { hitHandle(p, in: $0) })
-        applyCursor(at: p)
         updateToolbar()
+        setHovered(overToolbar(p) ? nil : selection.flatMap { hitHandle(p, in: $0) })
+        applyCursor(at: p)
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
+    }
+
+    /// Rect spanning two points; with `square`, the larger side wins and the drag direction is kept.
+    static func rect(from a: NSPoint, to b: NSPoint, square: Bool) -> NSRect {
+        var dx = b.x - a.x, dy = b.y - a.y
+        if square {
+            let side = max(abs(dx), abs(dy))
+            dx = dx < 0 ? -side : side
+            dy = dy < 0 ? -side : side
+        }
+        return NSRect(x: min(a.x, a.x + dx), y: min(a.y, a.y + dy), width: abs(dx), height: abs(dy))
+    }
+
+    /// Snaps the end point to the nearest 45 degree angle, keeping the length.
+    static func snap45(from a: NSPoint, to b: NSPoint) -> NSPoint {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = hypot(dx, dy)
+        let angle = (atan2(dy, dx) / (.pi / 4)).rounded() * (.pi / 4)
+        return NSPoint(x: a.x + cos(angle) * len, y: a.y + sin(angle) * len)
     }
 
     private func resized(_ r: NSRect, handle: Handle, dx: CGFloat, dy: CGFloat) -> NSRect {
@@ -401,6 +449,7 @@ final class OverlayView: NSView {
         for h in Handle.allCases {
             addCursorRect(handleRect(h, in: sel), cursor: resizeCursor(for: h))
         }
+        if let bar = toolbar, !bar.isHidden { addCursorRect(bar.frame, cursor: .arrow) }
     }
 
     // MARK: Hover
@@ -417,12 +466,19 @@ final class OverlayView: NSView {
     override func mouseMoved(with event: NSEvent) {
         guard case .none = dragMode else { return }
         let p = convert(event.locationInWindow, from: nil)
-        setHovered(selection.flatMap { hitHandle(p, in: $0) })
+        setHovered(overToolbar(p) ? nil : selection.flatMap { hitHandle(p, in: $0) })
+        updateHoverWindow(at: p)
         applyCursor(at: p)
     }
 
     override func mouseExited(with event: NSEvent) {
         setHovered(nil)
+        if hoverWindow != nil { hoverWindow = nil; needsDisplay = true }
+    }
+
+    private func overToolbar(_ p: NSPoint) -> Bool {
+        guard let bar = toolbar, !bar.isHidden else { return false }
+        return bar.frame.contains(p)
     }
 
     override func cursorUpdate(with event: NSEvent) {
@@ -433,7 +489,9 @@ final class OverlayView: NSView {
     /// so drive the cursor straight off the pointer position.
     private func applyCursor(at p: NSPoint) {
         guard !pushedCursor else { return }
-        if let h = hoveredHandle {
+        if overToolbar(p) {
+            NSCursor.arrow.set()
+        } else if let h = hoveredHandle {
             resizeCursor(for: h).set()
         } else if let sel = selection, sel.contains(p) {
             (tool == .move ? NSCursor.openHand : NSCursor.crosshair).set()
@@ -472,6 +530,25 @@ final class OverlayView: NSView {
             session?.saveAndFinish(from: self)
         } else if cmdOrCtrl && key == "z" {
             undoAnnotation()
+        } else if (123...126).contains(Int(event.keyCode)), var sel = selection {
+            // Arrow keys nudge the selection 1pt (Shift: 10pt); Option resizes it from the bottom-right corner.
+            let step: CGFloat = mods.contains(.shift) ? 10 : 1
+            let d: (CGFloat, CGFloat) = [123: (-step, 0), 124: (step, 0), 125: (0, -step), 126: (0, step)][Int(event.keyCode)]!
+            if mods.contains(.option) {
+                // Right/Down grow (right and bottom edges move out), Left/Up shrink.
+                let h = max(5, sel.height - d.1)
+                sel.origin.y += sel.height - h
+                sel.size.height = h
+                sel.size.width = max(5, sel.width + d.0)
+            } else {
+                sel = sel.offsetBy(dx: d.0, dy: d.1)
+            }
+            sel.origin.x = max(0, min(sel.origin.x, bounds.width - sel.width))
+            sel.origin.y = max(0, min(sel.origin.y, bounds.height - sel.height))
+            selection = sel
+            updateToolbar()
+            window?.invalidateCursorRects(for: self)
+            needsDisplay = true
         } else if key == "a" {
             selectTool(.arrow)
         } else if key == "b" {
@@ -517,6 +594,9 @@ final class OverlayView: NSView {
                                          trackingMode: .selectOne,
                                          target: self, action: #selector(toolChanged(_:)))
         control.selectedSegment = tool.rawValue
+        control.setToolTip("Move the selection (M)", forSegment: 0)
+        control.setToolTip("Arrow (A, Shift snaps to 45°)", forSegment: 1)
+        control.setToolTip("Box (B, Shift for a square)", forSegment: 2)
         toolControl = control
 
         let undoButton = NSButton(title: "Undo", target: self, action: #selector(undoPressed))
@@ -527,6 +607,11 @@ final class OverlayView: NSView {
         t3Button.toolTip = "Send to T3 Code as a new thread (T)"
         let cancelButton = NSButton(title: "✕", target: self, action: #selector(cancelPressed))
         copyButton.keyEquivalent = "\r"
+        undoButton.toolTip = "Undo last drawing (⌘Z)"
+        recordButton.toolTip = "Record the selection as MP4 (R)"
+        saveButton.toolTip = "Save as PNG (⌘S)"
+        copyButton.toolTip = "Copy and close (⏎, double-click)"
+        cancelButton.toolTip = "Cancel (Esc)"
         for b in [undoButton, recordButton, saveButton, t3Button, copyButton, cancelButton] {
             b.bezelStyle = .rounded
             b.controlSize = .regular
@@ -562,6 +647,7 @@ final class OverlayView: NSView {
         if y + size.height > bounds.maxY - 8 { y = sel.minY + 10 }
         bar.setFrameOrigin(NSPoint(x: x, y: y))
         bar.isHidden = false
+        window?.invalidateCursorRects(for: self)
     }
 
     @objc private func toolChanged(_ sender: NSSegmentedControl) {
@@ -1592,7 +1678,27 @@ final class CaptureSession {
         session.start()
     }
 
+    /// Normal app windows, front to back, in global Cocoa coordinates. Read before the
+    /// overlays exist so they never show up.
+    private var appWindows: [NSRect] = []
+
+    private static func onScreenAppWindows() -> [NSRect] {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
+              let primary = NSScreen.screens.first?.frame else { return [] }
+        let me = ProcessInfo.processInfo.processIdentifier
+        return list.compactMap { info in
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  (info[kCGWindowOwnerPID as String] as? Int32) != me,
+                  (info[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let b = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let x = b["X"], let y = b["Y"], let w = b["Width"], let h = b["Height"],
+                  w >= 40, h >= 40 else { return nil }
+            return NSRect(x: x, y: primary.maxY - y - h, width: w, height: h)
+        }
+    }
+
     private func start() {
+        appWindows = Self.onScreenAppWindows()
         SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, error in
             guard let content else {
                 DispatchQueue.main.async { self.fail(error) }
@@ -1652,6 +1758,10 @@ final class CaptureSession {
             view.displayID = displayID
             view.screenFrame = screen.frame
             view.backingScale = screen.backingScaleFactor
+            view.windowRects = appWindows.compactMap { w in
+                let local = w.intersection(screen.frame).offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY)
+                return local.width >= 40 && local.height >= 40 ? local : nil
+            }
             win.contentView = view
             windows.append(win)
             views.append(view)
@@ -1670,8 +1780,9 @@ final class CaptureSession {
         }
         for win in windows { win.orderFrontRegardless() }
         keyWindow.makeKeyAndOrderFront(nil)
-        if let view = keyWindow.contentView {
+        if let view = keyWindow.contentView as? OverlayView {
             keyWindow.makeFirstResponder(view)
+            view.updateHoverWindow(at: NSPoint(x: mouse.x - keyWindow.frame.minX, y: mouse.y - keyWindow.frame.minY))
         }
     }
 
@@ -1843,6 +1954,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKey: ChordHotKey?
     private var retryTimer: Timer?
     private var isRecording = false
+    private var recordingTimer: Timer?
+    private var recordingStarted = Date()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
@@ -1882,6 +1995,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                   keyEquivalent: "q")
         menu.addItem(quitItem)
         item.menu = menu
+        self.menu = menu
         statusItem = item
 
         // The event tap needs Accessibility; this shows the system prompt once.
@@ -1909,19 +2023,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
+    private var menu: NSMenu?
+
+    /// While recording, the menu bar item shows the elapsed time and one click stops it.
     func setRecording(_ on: Bool) {
         isRecording = on
-        if let button = statusItem?.button {
-            if on {
-                button.image = NSImage(systemSymbolName: "stop.circle.fill",
-                                       accessibilityDescription: "Stop recording")
-                button.contentTintColor = .systemRed
-            } else {
-                button.image = NSImage(systemSymbolName: "camera.viewfinder",
-                                       accessibilityDescription: "QuickShot")
-                button.contentTintColor = nil
-            }
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        guard let item = statusItem, let button = item.button else { return }
+        if on {
+            recordingStarted = Date()
+            item.length = NSStatusItem.variableLength
+            item.menu = nil
+            button.target = self
+            button.action = #selector(stopFromStatusItem)
+            button.image = NSImage(systemSymbolName: "stop.circle.fill",
+                                   accessibilityDescription: "Stop recording")
+            button.imagePosition = .imageLeading
+            button.contentTintColor = .systemRed
+            button.toolTip = "Click to stop recording (fn+⌃)"
+            updateRecordingTitle()
+            let t = Timer(timeInterval: 1, repeats: true) { _ in AppDelegate.shared?.updateRecordingTitle() }
+            RunLoop.main.add(t, forMode: .common)
+            recordingTimer = t
+        } else {
+            item.length = NSStatusItem.squareLength
+            item.menu = menu
+            button.action = nil
+            button.title = ""
+            button.toolTip = nil
+            button.image = NSImage(systemSymbolName: "camera.viewfinder",
+                                   accessibilityDescription: "QuickShot")
+            button.imagePosition = .imageOnly
+            button.contentTintColor = nil
         }
+    }
+
+    private func updateRecordingTitle() {
+        let s = Int(Date().timeIntervalSince(recordingStarted))
+        statusItem?.button?.title = String(format: " %d:%02d", s / 60, s % 60)
+        statusItem?.button?.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+    }
+
+    @objc private func stopFromStatusItem() {
+        if #available(macOS 15.0, *) { RecordingSession.current?.stop() }
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -1931,7 +2076,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hotKeyStatusItem?.title = "Hotkey active"
             hotKeyStatusItem?.action = nil
         } else {
-            hotKeyStatusItem?.title = "⚠️ Hotkey off — grant Accessibility…"
+            hotKeyStatusItem?.title = "Hotkey off: grant Accessibility…"
             hotKeyStatusItem?.action = #selector(openAccessibilitySettings)
         }
     }
