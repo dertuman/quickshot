@@ -478,6 +478,8 @@ final class OverlayView: NSView {
             selectTool(.box)
         } else if key == "r" {
             session?.startRecording(from: self)
+        } else if key == "t" {
+            session?.sendToT3(from: self)
         } else if key == "m" || key == "v" {
             selectTool(.move)
         } else {
@@ -521,14 +523,16 @@ final class OverlayView: NSView {
         let recordButton = NSButton(title: "Record", target: self, action: #selector(recordPressed))
         let saveButton = NSButton(title: "Save…", target: self, action: #selector(savePressed))
         let copyButton = NSButton(title: "Copy", target: self, action: #selector(copyPressed))
+        let t3Button = NSButton(title: "T3", target: self, action: #selector(t3Pressed))
+        t3Button.toolTip = "Send to T3 Code as a new thread (T)"
         let cancelButton = NSButton(title: "✕", target: self, action: #selector(cancelPressed))
         copyButton.keyEquivalent = "\r"
-        for b in [undoButton, recordButton, saveButton, copyButton, cancelButton] {
+        for b in [undoButton, recordButton, saveButton, t3Button, copyButton, cancelButton] {
             b.bezelStyle = .rounded
             b.controlSize = .regular
         }
 
-        let stack = NSStackView(views: [control, undoButton, recordButton, copyButton, saveButton, cancelButton])
+        let stack = NSStackView(views: [control, undoButton, recordButton, t3Button, copyButton, saveButton, cancelButton])
         stack.orientation = .horizontal
         stack.spacing = 8
         let fit = stack.fittingSize
@@ -570,6 +574,7 @@ final class OverlayView: NSView {
     @objc private func recordPressed() { session?.startRecording(from: self) }
     @objc private func copyPressed() { session?.copyAndFinish(from: self) }
     @objc private func savePressed() { session?.saveAndFinish(from: self) }
+    @objc private func t3Pressed() { session?.sendToT3(from: self) }
     @objc private func cancelPressed() { session?.dismiss() }
 
     // MARK: Composite
@@ -1703,6 +1708,15 @@ final class CaptureSession {
         HistoryStore.shared.saveImage(png)
         HistoryWindowController.shared?.reload()
         dismiss()
+    }
+
+    func sendToT3(from view: OverlayView) {
+        guard let rep = view.renderComposite(),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        HistoryStore.shared.saveImage(png)
+        HistoryWindowController.shared?.reload()
+        dismiss()
+        T3Sender.begin(png: png)
     }
 
     func startRecording(from view: OverlayView) {

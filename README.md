@@ -26,6 +26,7 @@ Prefer building from source? `git clone https://github.com/dertuman/quickshot &&
 - Grab the corner and edge handles to resize the selection. Your drawings stay pinned to the screen content while you do.
 - **Drag inside the selection to draw**: a red arrow by default. The toolbar under the selection switches tools: **Move**, **Arrow**, **Box**.
 - **Slam the spacebar** (or ⏎, ⌘C, ⌃C) and the annotated shot is on your clipboard. The whole thing is fn+⌃, drag, space. **Save…** (or ⌘S) writes a PNG instead. **Esc** bails out.
+- **Send to T3** (`T` or the **T3** button) starts a new [T3 Code](https://t3.codes) thread with the screenshot attached, in `~/Documents/GitHub` by default. Change the folder with `defaults write com.alex.quickshot T3Project /path/to/project`.
 - **History** keeps your last 100 captures (screenshots and recordings). Open **History…** from the menu bar icon, click any shot to preview it, and hit **Copy** (or ⏎, or double-click) to put it back on your clipboard, ready to paste anywhere. Toggle **Keep History** in the menu to turn it off; nothing is stored while it's off.
 - **Record** (or R) records the selected region instead: a thin red border marks it, the menu bar icon becomes a red stop button, and fn+⌃ (or clicking it) stops. The MP4 lands on your Desktop with the file already on your clipboard, ready to paste into Slack or wherever. 60 fps, H.264, no audio, tiny files.
 
@@ -36,6 +37,7 @@ Keyboard while the overlay is up:
 | `A` | Arrow tool |
 | `B` | Box tool |
 | `R` | Record the selection as MP4 |
+| `T` | Send to T3 Code as a new thread (optional prompt, then it opens the thread) |
 | `M` or `V` | Move tool (drag inside to reposition the selection) |
 | `⌘Z` | Undo last drawing |
 | `space` / `⏎` / `⌘C` / `⌃C` | Copy and close |
