@@ -7,7 +7,7 @@ import ScreenCaptureKit
 // else (a new thread in any project, or an existing thread) or to change the default.
 enum QuickChat {
     private static var busy = false
-    private static var flight: NSWindow?
+    private static var flight: [NSWindow] = []
     private static var picker: QuickPicker?
     private static var chip: SentChip?
 
@@ -115,42 +115,53 @@ enum QuickChat {
     /// T3's composer, shrinking to a thumbnail as it lands.
     private static func fly(_ image: CGImage, from rect: NSRect, to kind: ChatTarget.Kind, t3PID: pid_t?,
                             flash withFlash: Bool, done: @escaping () -> Void) {
+        // One overlay per display: with separate Spaces per display, a window spanning all
+        // screens only shows on one of them. Each overlay draws the same card in global
+        // coordinates (offset by its screen), so the flight crosses displays too.
         let union = NSScreen.screens.reduce(NSRect.null) { $0.union($1.frame) }
-        let win = NSWindow(contentRect: union, styleMask: .borderless, backing: .buffered, defer: false)
-        win.isOpaque = false
-        win.backgroundColor = .clear
-        win.hasShadow = false
-        win.ignoresMouseEvents = true
-        win.level = .popUpMenu
-        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
-        win.setFrame(union, display: false)
-        let root = NSView(frame: NSRect(origin: .zero, size: union.size))
-        root.wantsLayer = true
-        win.contentView = root
-
         let start = rect.offsetBy(dx: -union.minX, dy: -union.minY)
-        let card = CALayer()
-        card.frame = start
-        card.shadowColor = NSColor.black.cgColor
-        card.shadowOpacity = 0.35
-        card.shadowRadius = 24
-        card.shadowOffset = CGSize(width: 0, height: -8)
-        card.shadowPath = CGPath(roundedRect: card.bounds, cornerWidth: 12, cornerHeight: 12, transform: nil)
-        let face = CALayer()
-        face.frame = card.bounds
-        face.contents = image
-        face.contentsGravity = .resizeAspect
-        face.cornerRadius = 12
-        face.masksToBounds = true
-        let flash = CALayer()
-        flash.frame = face.bounds
-        flash.backgroundColor = NSColor.white.cgColor
-        flash.opacity = 0
-        face.addSublayer(flash)
-        card.addSublayer(face)
-        root.layer?.addSublayer(card)
-        win.orderFrontRegardless()
-        flight = win
+        var wins: [NSWindow] = [], cards: [CALayer] = [], flashes: [CALayer] = []
+        for scr in NSScreen.screens {
+            let win = NSWindow(contentRect: scr.frame, styleMask: .borderless, backing: .buffered, defer: false)
+            win.isOpaque = false
+            win.backgroundColor = .clear
+            win.hasShadow = false
+            win.ignoresMouseEvents = true
+            win.level = .popUpMenu
+            win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+            win.setFrame(scr.frame, display: false)
+            let root = NSView(frame: NSRect(origin: .zero, size: scr.frame.size))
+            root.wantsLayer = true
+            win.contentView = root
+            let world = CALayer()
+            world.frame = CGRect(x: union.minX - scr.frame.minX, y: union.minY - scr.frame.minY,
+                                 width: union.width, height: union.height)
+            root.layer?.addSublayer(world)
+
+            let card = CALayer()
+            card.frame = start
+            card.shadowColor = NSColor.black.cgColor
+            card.shadowOpacity = 0.35
+            card.shadowRadius = 24
+            card.shadowOffset = CGSize(width: 0, height: -8)
+            card.shadowPath = CGPath(roundedRect: card.bounds, cornerWidth: 12, cornerHeight: 12, transform: nil)
+            let face = CALayer()
+            face.frame = card.bounds
+            face.contents = image
+            face.contentsGravity = .resizeAspect
+            face.cornerRadius = 12
+            face.masksToBounds = true
+            let flash = CALayer()
+            flash.frame = face.bounds
+            flash.backgroundColor = NSColor.white.cgColor
+            flash.opacity = 0
+            face.addSublayer(flash)
+            card.addSublayer(face)
+            world.addSublayer(card)
+            win.orderFrontRegardless()
+            wins.append(win); cards.append(card); flashes.append(flash)
+        }
+        flight = wins
 
         // Land on T3's composer: centered in a new thread's main pane, at the bottom of an
         // existing thread, or mid screen when T3 has no window yet (it comes forward there).
@@ -177,7 +188,7 @@ enum QuickChat {
         flashAnim.values = [0, 0.35, 0]
         flashAnim.keyTimes = [0, 0.25, 1]
         flashAnim.duration = 0.32
-        if withFlash { flash.add(flashAnim, forKey: "flash") }
+        if withFlash { flashes.forEach { $0.add(flashAnim, forKey: "flash") } }
 
         let press = CAKeyframeAnimation(keyPath: "transform.scale")
         press.values = [1, 0.95, 0.97]
@@ -223,15 +234,17 @@ enum QuickChat {
         shadowFade.fillMode = .both
         shadowFade.isRemovedOnCompletion = false
 
-        card.add(press, forKey: "press")
-        card.add(move, forKey: "move")
-        card.add(shrink, forKey: "shrink")
-        card.add(shadowFade, forKey: "shadow")
-        card.add(fade, forKey: "fade")
+        for card in cards {
+            card.add(press, forKey: "press")
+            card.add(move, forKey: "move")
+            card.add(shrink, forKey: "shrink")
+            card.add(shadowFade, forKey: "shadow")
+            card.add(fade, forKey: "fade")
+        }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + lift + travel + 0.06) {
-            win.orderOut(nil)
-            if flight === win { flight = nil }
+            wins.forEach { $0.orderOut(nil) }
+            if flight.first === wins.first { flight = [] }
             done()
         }
     }
