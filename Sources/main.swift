@@ -1813,6 +1813,13 @@ final class CaptureSession {
     }
 
     func copyAndFinish(from view: OverlayView) {
+        // Nothing selected yet: copy the whole screen under the pointer (fn+⌃, then space).
+        var view = views.first { $0.selection != nil } ?? view
+        if view.selection == nil {
+            let mouse = NSEvent.mouseLocation
+            view = views.first { $0.screenFrame.contains(mouse) } ?? view
+            view.selection = view.bounds
+        }
         guard let rep = view.renderComposite(),
               let png = rep.representation(using: .png, properties: [:]) else { return }
         let image = NSImage(size: rep.size)

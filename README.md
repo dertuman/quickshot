@@ -25,7 +25,7 @@ Prefer building from source? `git clone https://github.com/dertuman/quickshot &&
 - **fn+⌃** (left control) freezes all your screens under a dimmed overlay. Drag to select. Press it again to bail out, same as Esc.
 - Grab the corner and edge handles to resize the selection. Your drawings stay pinned to the screen content while you do.
 - **Drag inside the selection to draw**: a red arrow by default. The toolbar under the selection switches tools: **Move**, **Arrow**, **Box**.
-- **Slam the spacebar** (or ⏎, ⌘C, ⌃C) and the annotated shot is on your clipboard. The whole thing is fn+⌃, drag, space. **Save…** (or ⌘S) writes a PNG instead. **Esc** bails out.
+- **Slam the spacebar** (or ⏎, ⌘C, ⌃C) and the annotated shot is on your clipboard. The whole thing is fn+⌃, drag, space. Press space without selecting anything and you get the whole screen under the pointer. **Save…** (or ⌘S) writes a PNG instead. **Esc** bails out.
 - **Send to T3** (`T` or the **T3** button) starts a new [T3 Code](https://t3.codes) thread with the screenshot attached, in `~/Documents/GitHub` by default. Change the folder with `defaults write com.alex.quickshot T3Project /path/to/project`. The message also says which app and window the screenshot was taken in (and the page address in a browser, without its query string), and if the project has a locator at `scripts/where` it runs it on the screenshot while you type and includes where that screen is in the code, so the agent starts at the right file. Point it at another program with `defaults write com.alex.quickshot T3Locator /path/to/program`; it is called as `<program> --image <png> [--url <page>]` and its output is used when it exits 0.
 - **Both ⌘ keys** (left and right together), from anywhere: the front window is screenshotted and flies straight into T3 Code, attached in the composer of your default target (a new thread in Home to start with), ready for your prompt. No questions first. A chip then shows bottom right where it went: click it to send the same screenshot to a new thread in another project or to an existing thread (type to filter, ↵ to send), or press ⌘D there to make the highlighted target the default for every later screenshot. `quickshotctl quickchat [--pick]` does the same.
 - **While recording**, the menu bar icon shows the elapsed time. Click it (or press fn+⌃) to stop.
@@ -46,7 +46,7 @@ Keyboard while the overlay is up:
 | Click (no drag) | Select the window under the pointer |
 | Double-click inside | Copy and close |
 | `⌘Z` | Undo last drawing |
-| `space` / `⏎` / `⌘C` / `⌃C` | Copy and close |
+| `space` / `⏎` / `⌘C` / `⌃C` | Copy and close (nothing selected: the whole screen under the pointer) |
 | `⌘S` | Save as PNG |
 | `Esc` | Cancel |
 
