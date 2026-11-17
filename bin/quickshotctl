@@ -6,7 +6,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--timeout', type=float, default=45)
     commands = parser.add_subparsers(dest='command', required=True)
-    for command in ('status', 'sources', 'stop'): commands.add_parser(command)
+    for command in ('status', 'sources', 'stop', 'quickchat'): commands.add_parser(command)
     marker = commands.add_parser('mark'); marker.add_argument('label')
     context = commands.add_parser('context'); context.add_argument('--app')
     start = commands.add_parser('start')

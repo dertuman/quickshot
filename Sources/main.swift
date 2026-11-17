@@ -1697,7 +1697,8 @@ final class CaptureSession {
                              bounds: CGRect(x: x, y: y, width: w, height: h),
                              pid: info[kCGWindowOwnerPID as String] as? Int32 ?? 0,
                              app: info[kCGWindowOwnerName as String] as? String ?? "",
-                             title: info[kCGWindowName as String] as? String ?? "")
+                             title: info[kCGWindowName as String] as? String ?? "",
+                             windowID: info[kCGWindowNumber as String] as? CGWindowID ?? 0)
         }
     }
 
@@ -2108,7 +2109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func installHotkey() {
         let hk = ChordHotKey(onTrigger: { AppDelegate.shared?.startCapture() },
-                             onBothCommands: { T3Sender.openNewChat() })
+                             onBothCommands: { QuickChat.trigger() })
         if hk.isActive {
             hotKey = hk
             retryTimer?.invalidate()

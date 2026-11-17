@@ -45,6 +45,12 @@ final class AutomationControl {
     }
 
     private func handle(_ r: [String: Any], reply: @escaping ([String: Any]) -> Void) throws {
+        if r["command"] as? String == "quickchat" {
+            // Same as pressing both ⌘ keys.
+            QuickChat.trigger()
+            reply(["ok": true])
+            return
+        }
         guard #available(macOS 15.0, *) else { throw ControlError("Recording requires macOS 15 or newer") }
         switch r["command"] as? String {
         case "status":

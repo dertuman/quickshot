@@ -245,38 +245,6 @@ final class T3Sender: NSObject, NSTextFieldDelegate {
 
     static let t3BundleID = "com.t3tools.t3code"
 
-    /// Both ⌘ keys: bring T3 Code forward and start a new chat (its chat.new shortcut, ⌘⇧O).
-    static func openNewChat() {
-        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: t3BundleID) else { NSSound.beep(); return }
-        let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
-        NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in
-            DispatchQueue.main.async { pressNewChat(app: app, deadline: Date().addingTimeInterval(5)) }
-        }
-    }
-
-    private static func pressNewChat(app: NSRunningApplication?, deadline: Date) {
-        let front = NSWorkspace.shared.frontmostApplication
-        guard front?.bundleIdentifier == t3BundleID, app?.isFinishedLaunching != false else {
-            // Wait for T3 to launch (cold start) or take focus before sending the shortcut.
-            if Date() < deadline {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { pressNewChat(app: app, deadline: deadline) }
-            }
-            return
-        }
-        // A cold start needs a moment before the web view handles keys.
-        let delay: TimeInterval = (app?.launchDate.map { Date().timeIntervalSince($0) < 4 } ?? false) ? 1.5 : 0.08
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            let src = CGEventSource(stateID: .privateState)
-            let keyO: CGKeyCode = 31
-            for down in [true, false] {
-                guard let e = CGEvent(keyboardEventSource: src, virtualKey: keyO, keyDown: down) else { continue }
-                e.flags = [.maskCommand, .maskShift]
-                e.postToPid(front!.processIdentifier)
-            }
-        }
-    }
-
     static func run(_ path: String, _ args: [String], stdin: String?, timeout: TimeInterval? = nil) -> (code: Int32, out: String, err: String) {
         guard FileManager.default.isExecutableFile(atPath: path) else {
             return (127, "", "T3 CLI not found at \(path). Open T3 Code once, or set it with: defaults write com.alex.quickshot T3CLI <path>")

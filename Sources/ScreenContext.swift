@@ -8,6 +8,7 @@ struct AppWindow {
     let pid: pid_t
     let app: String
     let title: String
+    var windowID: CGWindowID = 0
 }
 
 /// What a screenshot shows: the app and window it was taken in and, when the app exposes it,
