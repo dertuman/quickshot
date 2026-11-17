@@ -1,6 +1,6 @@
 import Cocoa
 
-/// Hold both ⌘ keys: a small panel over the screenshot to pick where it goes. Type to filter,
+/// After a both-⌘ screenshot, from the chip: a small panel to send it somewhere else. Type to filter,
 /// arrows to move, ↵ or click to send, ⌘D to make the highlighted target the default.
 final class QuickPicker: NSObject, NSTextFieldDelegate {
     private final class KeyPanel: NSPanel {
@@ -70,8 +70,11 @@ final class QuickPicker: NSObject, NSTextFieldDelegate {
     private var defaultTarget = ChatTarget.standard
     private var finished = false
 
-    init(image: NSImage?, done: @escaping (ChatTarget?, NSRect?) -> Void) {
+    private let sentTo: ChatTarget?
+
+    init(image: NSImage?, sentTo: ChatTarget? = nil, done: @escaping (ChatTarget?, NSRect?) -> Void) {
         self.image = image
+        self.sentTo = sentTo
         self.done = done
         super.init()
         (projects, threads) = Catalog.load()
@@ -215,8 +218,8 @@ final class QuickPicker: NSObject, NSTextFieldDelegate {
         field.frame = NSRect(x: 16, y: hintH + listHeight + pad, width: w - 32, height: 24)
         imageView.frame = NSRect(x: 12, y: total - 12 - imageH, width: w - 24, height: imageH)
 
-        let defaultIndex = rows.firstIndex { $0.target == defaultTarget }
-        select(field.stringValue.isEmpty ? (defaultIndex ?? 0) : 0)
+        // Start on the first target the screenshot is not already in.
+        select(rows.firstIndex { $0.target != sentTo } ?? 0)
     }
 
     private func select(_ i: Int) {
@@ -273,5 +276,117 @@ final class QuickPicker: NSObject, NSTextFieldDelegate {
         panel.orderOut(nil)
         self.panel = nil
         done(target, from)
+    }
+}
+
+/// Bottom right after a both-⌘ screenshot: where it went. One click target: opens the picker to
+/// send it elsewhere or change the default. Fades out after a few seconds unless hovered.
+final class SentChip: NSObject {
+    private final class ChipView: NSVisualEffectView {
+        var onClick: (() -> Void)?
+        var onHover: ((Bool) -> Void)?
+        override func mouseDown(with event: NSEvent) { onClick?() }
+        override func mouseEntered(with event: NSEvent) { onHover?(true) }
+        override func mouseExited(with event: NSEvent) { onHover?(false) }
+        override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+
+    private let image: NSImage
+    private let target: ChatTarget
+    private let onClick: (NSRect) -> Void
+    private var panel: NSPanel?
+    private var thumb: NSImageView?
+    private var hovering = false
+    private var timer: Timer?
+
+    init(image: NSImage, target: ChatTarget, onClick: @escaping (NSRect) -> Void) {
+        self.image = image
+        self.target = target
+        self.onClick = onClick
+    }
+
+    func show() {
+        let w: CGFloat = 280, h: CGFloat = 56
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let v = ChipView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        v.material = .popover
+        v.blendingMode = .behindWindow
+        v.state = .active
+        v.wantsLayer = true
+        v.layer?.cornerRadius = 12
+        v.layer?.masksToBounds = true
+        v.onClick = { [weak self] in self?.click() }
+        v.onHover = { [weak self] inside in self?.hovering = inside; if !inside { self?.armTimer(3) } }
+        v.addTrackingArea(NSTrackingArea(rect: v.bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: v))
+
+        let t = NSImageView(frame: NSRect(x: 10, y: 8, width: 56, height: 40))
+        t.image = image
+        t.imageScaling = .scaleProportionallyUpOrDown
+        t.wantsLayer = true
+        t.layer?.cornerRadius = 4
+        t.layer?.masksToBounds = true
+
+        let title = NSTextField(labelWithString: target.label)
+        title.font = .systemFont(ofSize: 13, weight: .medium)
+        title.lineBreakMode = .byTruncatingTail
+        title.frame = NSRect(x: 76, y: 28, width: w - 88, height: 18)
+        let sub = NSTextField(labelWithString: (target.kind == .newThread ? "New thread" : target.project) + " · Change")
+        sub.font = .systemFont(ofSize: 11)
+        sub.textColor = .secondaryLabelColor
+        sub.lineBreakMode = .byTruncatingTail
+        sub.frame = NSRect(x: 76, y: 10, width: w - 88, height: 16)
+        for s in [t, title, sub] { v.addSubview(s) }
+        panel.contentView = v
+
+        let screen = NSScreen.main ?? NSScreen.screens[0]
+        let f = screen.visibleFrame
+        panel.setFrameOrigin(NSPoint(x: f.maxX - w - 16, y: f.minY + 16))
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.18
+            panel.animator().alphaValue = 1
+        }
+        self.panel = panel
+        self.thumb = t
+        armTimer(6)
+    }
+
+    private func armTimer(_ seconds: TimeInterval) {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            guard let self, !self.hovering else { return }
+            self.fadeOut()
+        }
+    }
+
+    func click() {
+        guard let panel, let thumb else { return }
+        let from = panel.convertToScreen(thumb.frame)
+        close()
+        onClick(from)
+    }
+
+    private func fadeOut() {
+        guard let panel else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.25
+            panel.animator().alphaValue = 0
+        }, completionHandler: { [weak self] in self?.close() })
+    }
+
+    func close() {
+        timer?.invalidate()
+        panel?.orderOut(nil)
+        panel = nil
     }
 }

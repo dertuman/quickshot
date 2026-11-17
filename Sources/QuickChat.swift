@@ -1,15 +1,15 @@
 import Cocoa
 import ScreenCaptureKit
 
-// Both ⌘ keys: screenshot the front window and fly it into T3 Code, attached in the composer
-// and ready for a prompt. A quick tap sends it to the default target (a new thread in Home to
-// start with). Holding the keys opens a picker: a new thread in any project, or an existing
-// thread, and ⌘D there makes the choice the default for later taps.
+// Both ⌘ keys: screenshot the front window and fly it into T3 Code, attached in the composer of
+// the default target (a new thread in Home to start with) and ready for a prompt. No questions
+// first. Afterwards a small chip says where it went; click it to send the screenshot somewhere
+// else (a new thread in any project, or an existing thread) or to change the default.
 enum QuickChat {
     private static var busy = false
     private static var flight: NSWindow?
     private static var picker: QuickPicker?
-    private static let holdDelay: TimeInterval = 0.3
+    private static var chip: SentChip?
 
     static func trigger(pick: Bool = false) {
         guard !busy else { return }
@@ -17,60 +17,53 @@ enum QuickChat {
             NSSound.beep(); return
         }
         busy = true
+        chip?.close()
         let front = NSWorkspace.shared.frontmostApplication
         let windows = CaptureSession.onScreenAppWindows()
         let source = windows.first(where: { $0.pid == front?.processIdentifier }) ?? windows.first
-
-        // Capture right away, before any panel is on screen; decide tap or hold meanwhile.
-        var image: CGImage?
-        var captured = source == nil || !CGPreflightScreenCaptureAccess()
-        var onCaptured: (() -> Void)?
-        if !captured, let source {
-            capture(source) { img in
-                image = img
-                captured = true
-                onCaptured?()
-                onCaptured = nil
+        let target = ChatTarget.standard
+        guard let source, CGPreflightScreenCaptureAccess() else {
+            send(nil, to: target, from: nil) { _ in }
+            return
+        }
+        capture(source) { image in
+            send(image, to: target, from: source.rect) { t3 in
+                guard let image, t3 != nil else { return }
+                showChip(image, sentTo: target, openPicker: pick)
             }
         }
-        let whenCaptured: (@escaping () -> Void) -> Void = { body in
-            if captured { body() } else { onCaptured = body }
-        }
-
-        let started = Date()
-        func poll() {
-            let held = CGEventSource.flagsState(.hidSystemState).contains(.maskCommand)
-            if !held && !pick {
-                // Tap: straight to the default target.
-                whenCaptured { send(image, to: ChatTarget.standard, from: source?.rect) }
-            } else if pick || Date().timeIntervalSince(started) >= holdDelay {
-                openPicker(front: front, source: source, image: { image }, whenCaptured: whenCaptured)
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { poll() }
-            }
-        }
-        poll()
     }
 
-    private static func openPicker(front: NSRunningApplication?, source: AppWindow?, image: @escaping () -> CGImage?,
-                                   whenCaptured: (@escaping () -> Void) -> Void) {
-        let nsImage = { (cg: CGImage?) in cg.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) } }
-        let p = QuickPicker(image: nsImage(image())) { target, from in
+    private static func showChip(_ image: CGImage, sentTo target: ChatTarget, openPicker: Bool) {
+        let ns = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+        let c = SentChip(image: ns, target: target) { from in
+            chip = nil
+            redirect(image, ns, sentTo: target, from: from)
+        }
+        chip = c
+        c.show()
+        if openPicker { c.click() }
+    }
+
+    /// The chip was clicked: pick another target for the same screenshot.
+    private static func redirect(_ image: CGImage, _ ns: NSImage, sentTo: ChatTarget, from: NSRect) {
+        guard !busy else { return }
+        let back = NSWorkspace.shared.frontmostApplication
+        let p = QuickPicker(image: ns, sentTo: sentTo) { target, thumb in
             picker = nil
-            guard let target else {
-                busy = false
-                front?.activate()
-                return
+            guard let target else { back?.activate(); return }
+            busy = true
+            send(image, to: target, from: thumb ?? from, flash: false) { t3 in
+                if t3 != nil { showChip(image, sentTo: target, openPicker: false) }
             }
-            send(image(), to: target, from: from ?? source?.rect, flash: from == nil)
         }
         picker = p
         p.show()
-        whenCaptured { if let img = nsImage(image()) { p.setImage(img) } }
     }
 
     /// Flies the screenshot into T3 while opening the target there, then pastes it in.
-    private static func send(_ image: CGImage?, to target: ChatTarget, from rect: NSRect?, flash: Bool = true) {
+    private static func send(_ image: CGImage?, to target: ChatTarget, from rect: NSRect?, flash: Bool = true,
+                             done: @escaping (NSRunningApplication?) -> Void) {
         let t3PID = NSRunningApplication.runningApplications(withBundleIdentifier: T3Sender.t3BundleID).first?.processIdentifier
         let png = image.flatMap(pngData)
         if let png {
@@ -86,8 +79,9 @@ enum QuickChat {
         group.enter()
         open(target) { app in t3 = app; group.leave() }
         group.notify(queue: .main) {
-            defer { busy = false }
+            busy = false
             if let t3, let png { paste(png, into: t3) }
+            done(t3)
         }
     }
 
