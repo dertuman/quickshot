@@ -174,7 +174,7 @@ enum QuickChat {
         let now = CACurrentMediaTime()
 
         let flashAnim = CAKeyframeAnimation(keyPath: "opacity")
-        flashAnim.values = [0, 0.7, 0]
+        flashAnim.values = [0, 0.35, 0]
         flashAnim.keyTimes = [0, 0.25, 1]
         flashAnim.duration = 0.32
         if withFlash { flash.add(flashAnim, forKey: "flash") }

@@ -1830,6 +1830,7 @@ final class CaptureSession {
         pb.setData(png, forType: .png)
         HistoryStore.shared.saveImage(png)
         HistoryWindowController.shared?.reload()
+        if let sel = view.selection { CaptureFlash.show(sel.offsetBy(dx: view.screenFrame.minX, dy: view.screenFrame.minY)) }
         dismiss()
     }
 
@@ -1843,6 +1844,7 @@ final class CaptureSession {
         }
         HistoryStore.shared.saveImage(png)
         HistoryWindowController.shared?.reload()
+        if let sel = view.selection { CaptureFlash.show(sel.offsetBy(dx: view.screenFrame.minX, dy: view.screenFrame.minY)) }
         dismiss()
         T3Sender.begin(png: png, source: source)
     }
@@ -1877,6 +1879,7 @@ final class CaptureSession {
     func saveAndFinish(from view: OverlayView) {
         guard let rep = view.renderComposite(),
               let png = rep.representation(using: .png, properties: [:]) else { return }
+        if let sel = view.selection { CaptureFlash.show(sel.offsetBy(dx: view.screenFrame.minX, dy: view.screenFrame.minY)) }
         dismiss()
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
@@ -1900,6 +1903,45 @@ final class CaptureSession {
         windows.removeAll()
         views.removeAll()
         CaptureSession.current = nil
+    }
+}
+
+// MARK: - Capture flash
+
+/// A faint brightening of exactly what was captured, so a screenshot is felt but not noticed.
+enum CaptureFlash {
+    private static var windows: [NSWindow] = []
+
+    static func show(_ rect: NSRect, peak: Float = 0.14) {
+        let win = NSWindow(contentRect: rect, styleMask: .borderless, backing: .buffered, defer: false)
+        win.isOpaque = false
+        win.backgroundColor = .clear
+        win.hasShadow = false
+        win.ignoresMouseEvents = true
+        win.level = .screenSaver
+        win.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        win.setFrame(rect, display: false)
+        let view = NSView(frame: NSRect(origin: .zero, size: rect.size))
+        view.wantsLayer = true
+        let layer = CALayer()
+        layer.frame = view.bounds
+        layer.backgroundColor = NSColor.white.cgColor
+        layer.opacity = 0
+        view.layer?.addSublayer(layer)
+        win.contentView = view
+        win.orderFrontRegardless()
+        windows.append(win)
+
+        let anim = CAKeyframeAnimation(keyPath: "opacity")
+        anim.values = [0, peak, 0]
+        anim.keyTimes = [0, 0.18, 1]
+        anim.duration = 0.38
+        anim.timingFunctions = [CAMediaTimingFunction(name: .easeOut), CAMediaTimingFunction(name: .easeInEaseOut)]
+        layer.add(anim, forKey: "flash")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+            win.orderOut(nil)
+            windows.removeAll { $0 === win }
+        }
     }
 }
 
