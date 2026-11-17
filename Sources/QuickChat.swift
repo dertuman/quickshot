@@ -2,7 +2,7 @@ import Cocoa
 import ScreenCaptureKit
 
 // Both ⌘ keys: screenshot the front window, fly it into T3 Code, open a new chat and paste the
-// screenshot into its composer, ready for a prompt. When T3 is already in front, just a new chat.
+// screenshot into its composer, ready for a prompt. Works the same when T3 itself is in front.
 enum QuickChat {
     private static var busy = false
     private static var flight: NSWindow?
@@ -15,9 +15,8 @@ enum QuickChat {
         busy = true
         let front = NSWorkspace.shared.frontmostApplication
         let t3PID = NSRunningApplication.runningApplications(withBundleIdentifier: T3Sender.t3BundleID).first?.processIdentifier
-        let windows = CaptureSession.onScreenAppWindows().filter { $0.pid != t3PID }
-        let source = front?.bundleIdentifier == T3Sender.t3BundleID ? nil
-            : windows.first(where: { $0.pid == front?.processIdentifier }) ?? windows.first
+        let windows = CaptureSession.onScreenAppWindows()
+        let source = windows.first(where: { $0.pid == front?.processIdentifier }) ?? windows.first
 
         guard let source, CGPreflightScreenCaptureAccess() else {
             openNewChat(t3URL) { _ in busy = false }
@@ -207,8 +206,10 @@ enum QuickChat {
     }
 
     private static func waitForFront(_ app: NSRunningApplication?, deadline: Date, done: @escaping (NSRunningApplication?) -> Void) {
+        // Also wait for the ⌘ keys of the chord to come up, so they don't mix into the shortcut.
+        let held = CGEventSource.flagsState(.hidSystemState).intersection([.maskCommand, .maskShift, .maskAlternate, .maskControl])
         guard let app, NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
-              app.isFinishedLaunching else {
+              app.isFinishedLaunching, held.isEmpty else {
             if Date() < deadline {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { waitForFront(app, deadline: deadline, done: done) }
             } else { done(nil) }
