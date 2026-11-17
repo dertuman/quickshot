@@ -47,7 +47,7 @@ final class AutomationControl {
     private func handle(_ r: [String: Any], reply: @escaping ([String: Any]) -> Void) throws {
         if r["command"] as? String == "quickchat" {
             // Same as pressing both ⌘ keys.
-            QuickChat.trigger()
+            QuickChat.trigger(pick: r["pick"] as? Bool == true)
             reply(["ok": true])
             return
         }

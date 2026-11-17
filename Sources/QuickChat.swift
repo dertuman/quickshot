@@ -1,46 +1,93 @@
 import Cocoa
 import ScreenCaptureKit
 
-// Both ⌘ keys: screenshot the front window, fly it into T3 Code, open a new chat and paste the
-// screenshot into its composer, ready for a prompt. Works the same when T3 itself is in front.
+// Both ⌘ keys: screenshot the front window and fly it into T3 Code, attached in the composer
+// and ready for a prompt. A quick tap sends it to the default target (a new thread in Home to
+// start with). Holding the keys opens a picker: a new thread in any project, or an existing
+// thread, and ⌘D there makes the choice the default for later taps.
 enum QuickChat {
     private static var busy = false
     private static var flight: NSWindow?
+    private static var picker: QuickPicker?
+    private static let holdDelay: TimeInterval = 0.3
 
-    static func trigger() {
+    static func trigger(pick: Bool = false) {
         guard !busy else { return }
-        guard let t3URL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: T3Sender.t3BundleID) else {
+        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: T3Sender.t3BundleID) != nil else {
             NSSound.beep(); return
         }
         busy = true
         let front = NSWorkspace.shared.frontmostApplication
-        let t3PID = NSRunningApplication.runningApplications(withBundleIdentifier: T3Sender.t3BundleID).first?.processIdentifier
         let windows = CaptureSession.onScreenAppWindows()
         let source = windows.first(where: { $0.pid == front?.processIdentifier }) ?? windows.first
 
-        guard let source, CGPreflightScreenCaptureAccess() else {
-            openNewChat(t3URL) { _ in busy = false }
-            return
+        // Capture right away, before any panel is on screen; decide tap or hold meanwhile.
+        var image: CGImage?
+        var captured = source == nil || !CGPreflightScreenCaptureAccess()
+        var onCaptured: (() -> Void)?
+        if !captured, let source {
+            capture(source) { img in
+                image = img
+                captured = true
+                onCaptured?()
+                onCaptured = nil
+            }
         }
-        capture(source) { image in
-            guard let image, let png = pngData(image) else {
-                openNewChat(t3URL) { _ in busy = false }
+        let whenCaptured: (@escaping () -> Void) -> Void = { body in
+            if captured { body() } else { onCaptured = body }
+        }
+
+        let started = Date()
+        func poll() {
+            let held = CGEventSource.flagsState(.hidSystemState).contains(.maskCommand)
+            if !held && !pick {
+                // Tap: straight to the default target.
+                whenCaptured { send(image, to: ChatTarget.standard, from: source?.rect) }
+            } else if pick || Date().timeIntervalSince(started) >= holdDelay {
+                openPicker(front: front, source: source, image: { image }, whenCaptured: whenCaptured)
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.016) { poll() }
+            }
+        }
+        poll()
+    }
+
+    private static func openPicker(front: NSRunningApplication?, source: AppWindow?, image: @escaping () -> CGImage?,
+                                   whenCaptured: (@escaping () -> Void) -> Void) {
+        let nsImage = { (cg: CGImage?) in cg.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) } }
+        let p = QuickPicker(image: nsImage(image())) { target, from in
+            picker = nil
+            guard let target else {
+                busy = false
+                front?.activate()
                 return
             }
+            send(image(), to: target, from: from ?? source?.rect, flash: from == nil)
+        }
+        picker = p
+        p.show()
+        whenCaptured { if let img = nsImage(image()) { p.setImage(img) } }
+    }
+
+    /// Flies the screenshot into T3 while opening the target there, then pastes it in.
+    private static func send(_ image: CGImage?, to target: ChatTarget, from rect: NSRect?, flash: Bool = true) {
+        let t3PID = NSRunningApplication.runningApplications(withBundleIdentifier: T3Sender.t3BundleID).first?.processIdentifier
+        let png = image.flatMap(pngData)
+        if let png {
             HistoryStore.shared.saveImage(png)
             HistoryWindowController.shared?.reload()
-
-            let group = DispatchGroup()
-            var t3: NSRunningApplication?
+        }
+        let group = DispatchGroup()
+        var t3: NSRunningApplication?
+        if let image, let rect {
             group.enter()
-            fly(image, from: source.rect, t3PID: t3PID) { group.leave() }
-            group.enter()
-            openNewChat(t3URL) { app in t3 = app; group.leave() }
-            group.notify(queue: .main) {
-                defer { busy = false }
-                guard let t3 else { return }
-                paste(png, into: t3)
-            }
+            fly(image, from: rect, to: target.kind, t3PID: t3PID, flash: flash) { group.leave() }
+        }
+        group.enter()
+        open(target) { app in t3 = app; group.leave() }
+        group.notify(queue: .main) {
+            defer { busy = false }
+            if let t3, let png { paste(png, into: t3) }
         }
     }
 
@@ -72,7 +119,8 @@ enum QuickChat {
 
     /// A snapshot of the window lifts off (flash and a small press), then arcs down into
     /// T3's composer, shrinking to a thumbnail as it lands.
-    private static func fly(_ image: CGImage, from rect: NSRect, t3PID: pid_t?, done: @escaping () -> Void) {
+    private static func fly(_ image: CGImage, from rect: NSRect, to kind: ChatTarget.Kind, t3PID: pid_t?,
+                            flash withFlash: Bool, done: @escaping () -> Void) {
         let union = NSScreen.screens.reduce(NSRect.null) { $0.union($1.frame) }
         let win = NSWindow(contentRect: union, styleMask: .borderless, backing: .buffered, defer: false)
         win.isOpaque = false
@@ -110,8 +158,8 @@ enum QuickChat {
         win.orderFrontRegardless()
         flight = win
 
-        // Land on T3's composer, centered in a new thread's main pane, or of the screen when T3
-        // has no window yet (it comes forward there).
+        // Land on T3's composer: centered in a new thread's main pane, at the bottom of an
+        // existing thread, or mid screen when T3 has no window yet (it comes forward there).
         let t3Window = t3PID.flatMap { pid in CaptureSession.onScreenAppWindows().first { $0.pid == pid } }
         let screen = NSScreen.screens.first(where: { $0.frame.intersects(rect) }) ?? NSScreen.main ?? NSScreen.screens[0]
         // The attachment thumbnail sits at the composer's top left; the composer is centered
@@ -121,7 +169,8 @@ enum QuickChat {
             let pane = NSRect(x: w.rect.minX + min(364, w.rect.width * 0.3), y: w.rect.minY,
                               width: w.rect.width - min(364, w.rect.width * 0.3), height: w.rect.height)
             let composerLeft = pane.midX - min(452, pane.width / 2 - 24)
-            return NSPoint(x: composerLeft + 20 + thumb / 2, y: w.rect.maxY - w.rect.height * 0.44)
+            let y = kind == .newThread ? w.rect.maxY - w.rect.height * 0.44 : w.rect.minY + 135
+            return NSPoint(x: composerLeft + 20 + thumb / 2, y: y)
         } ?? NSPoint(x: screen.frame.midX, y: screen.frame.midY)
         let end = NSPoint(x: landing.x - union.minX, y: landing.y - union.minY)
         let startCenter = NSPoint(x: start.midX, y: start.midY)
@@ -134,7 +183,7 @@ enum QuickChat {
         flashAnim.values = [0, 0.7, 0]
         flashAnim.keyTimes = [0, 0.25, 1]
         flashAnim.duration = 0.32
-        flash.add(flashAnim, forKey: "flash")
+        if withFlash { flash.add(flashAnim, forKey: "flash") }
 
         let press = CAKeyframeAnimation(keyPath: "transform.scale")
         press.values = [1, 0.95, 0.97]
@@ -195,30 +244,56 @@ enum QuickChat {
 
     // MARK: T3
 
-    /// Brings T3 forward and presses its chat.newLocal shortcut (⌘⇧N: new thread in the current project). Calls back with T3 once the
-    /// new chat had a moment to open, or nil when T3 never came forward.
-    static func openNewChat(_ appURL: URL, done: @escaping (NSRunningApplication?) -> Void) {
+    /// Opens the target in T3 and calls back with T3 once its composer is ready, or nil when T3
+    /// never came forward. A new thread: `t3 app <project>` selects the project, then T3's
+    /// chat.newLocal shortcut (⌘⇧N) opens a new thread there. A thread: its deep link.
+    static func open(_ target: ChatTarget, done: @escaping (NSRunningApplication?) -> Void) {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: T3Sender.t3BundleID) else { done(nil); return }
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
-        NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in
-            DispatchQueue.main.async { waitForFront(app, deadline: Date().addingTimeInterval(6), done: done) }
+        let deadline = Date().addingTimeInterval(8)
+        if target.kind == .thread, let url = target.threadURL {
+            NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: config) { app, _ in
+                DispatchQueue.main.async {
+                    waitForFront(app, deadline: deadline, settle: 0.45, press: nil, done: done)
+                }
+            }
+            return
+        }
+        let cli = T3Sender.cli, path = target.path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let r = T3Sender.run(cli, ["app", path], stdin: nil, timeout: 5)
+            DispatchQueue.main.async {
+                NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in
+                    DispatchQueue.main.async {
+                        // Give the project switch a moment before the shortcut (none when it failed:
+                        // the new thread then opens in whichever project is current).
+                        waitForFront(app, deadline: deadline, settle: r.code == 0 ? 0.25 : 0.08,
+                                     press: (45, [.maskCommand, .maskShift]), done: done)   // ⌘⇧N
+                    }
+                }
+            }
         }
     }
 
-    private static func waitForFront(_ app: NSRunningApplication?, deadline: Date, done: @escaping (NSRunningApplication?) -> Void) {
+    private static func waitForFront(_ app: NSRunningApplication?, deadline: Date, settle: TimeInterval,
+                                     press shortcut: (CGKeyCode, CGEventFlags)?, done: @escaping (NSRunningApplication?) -> Void) {
         // Also wait for the ⌘ keys of the chord to come up, so they don't mix into the shortcut.
         let held = CGEventSource.flagsState(.hidSystemState).intersection([.maskCommand, .maskShift, .maskAlternate, .maskControl])
         guard let app, NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
               app.isFinishedLaunching, held.isEmpty else {
             if Date() < deadline {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { waitForFront(app, deadline: deadline, done: done) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    waitForFront(app, deadline: deadline, settle: settle, press: shortcut, done: done)
+                }
             } else { done(nil) }
             return
         }
         // A cold start needs time before the web view handles keys.
         let cold = app.launchDate.map { Date().timeIntervalSince($0) < 5 } ?? false
-        DispatchQueue.main.asyncAfter(deadline: .now() + (cold ? 2 : 0.08)) {
-            press(key: 45, flags: [.maskCommand, .maskShift], to: app)   // ⌘⇧N
+        DispatchQueue.main.asyncAfter(deadline: .now() + (cold ? 2 : settle)) {
+            guard let (key, flags) = shortcut else { done(app); return }
+            press(key: key, flags: flags, to: app)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { done(app) }
         }
     }
