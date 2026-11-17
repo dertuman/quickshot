@@ -1900,16 +1900,21 @@ final class CaptureSession {
 final class ChordHotKey {
     // Device-dependent modifier bit from IOLLEvent.h, the one that distinguishes sides.
     private static let leftControlMask: UInt64 = 0x0001  // NX_DEVICELCTLKEYMASK
+    private static let leftCommandMask: UInt64 = 0x0008  // NX_DEVICELCMDKEYMASK
+    private static let rightCommandMask: UInt64 = 0x0010 // NX_DEVICERCMDKEYMASK
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var comboDown = false
+    private var commandsDown = false
     private let onTrigger: () -> Void
+    private let onBothCommands: () -> Void
 
     var isActive: Bool { tap != nil }
 
-    init(onTrigger: @escaping () -> Void) {
+    init(onTrigger: @escaping () -> Void, onBothCommands: @escaping () -> Void = {}) {
         self.onTrigger = onTrigger
+        self.onBothCommands = onBothCommands
 
         let mask = 1 << CGEventType.flagsChanged.rawValue
         let callback: CGEventTapCallBack = { _, type, event, userInfo in
@@ -1947,6 +1952,17 @@ final class ChordHotKey {
             DispatchQueue.main.async { self.onTrigger() }
         } else if !active {
             comboDown = false
+        }
+
+        // Both ⌘ keys together (left and right), nothing else held: new T3 chat.
+        let both = flags.rawValue & Self.leftCommandMask != 0 && flags.rawValue & Self.rightCommandMask != 0
+        let others: CGEventFlags = [.maskShift, .maskControl, .maskAlternate, .maskSecondaryFn]
+        let bothOnly = both && flags.intersection(others).isEmpty
+        if bothOnly && !commandsDown {
+            commandsDown = true
+            DispatchQueue.main.async { self.onBothCommands() }
+        } else if !both {
+            commandsDown = false
         }
     }
 }
@@ -2091,7 +2107,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func installHotkey() {
-        let hk = ChordHotKey { AppDelegate.shared?.startCapture() }
+        let hk = ChordHotKey(onTrigger: { AppDelegate.shared?.startCapture() },
+                             onBothCommands: { T3Sender.openNewChat() })
         if hk.isActive {
             hotKey = hk
             retryTimer?.invalidate()

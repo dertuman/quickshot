@@ -187,10 +187,9 @@ final class T3Sender: NSObject, NSTextFieldDelegate {
             field?.isEnabled = true
             return
         }
+        // Sent: the thread runs in T3 without pulling it to the front.
         sent = true
         close()
-        let threadID = Self.threadID(fromJSON: r.out)
-        Self.openT3(project: Self.project, threadID: threadID)
     }
 
     private func showError(_ text: String) {
@@ -244,27 +243,36 @@ final class T3Sender: NSObject, NSTextFieldDelegate {
         return url
     }
 
-    static func threadID(fromJSON out: String) -> String? {
-        guard let data = out.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty || trimmed.contains(" ") ? nil : trimmed
+    static let t3BundleID = "com.t3tools.t3code"
+
+    /// Both ⌘ keys: bring T3 Code forward and start a new chat (its chat.new shortcut, ⌘⇧O).
+    static func openNewChat() {
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: t3BundleID) else { NSSound.beep(); return }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in
+            DispatchQueue.main.async { pressNewChat(app: app, deadline: Date().addingTimeInterval(5)) }
         }
-        for key in ["threadId", "id"] { if let v = obj[key] as? String { return v } }
-        if let t = obj["thread"] as? [String: Any], let v = t["id"] as? String { return v }
-        return nil
     }
 
-    static func openT3(project: String, threadID: String?) {
-        // `t3 app <path>` focuses the desktop app on the project, where the new thread is on top.
-        DispatchQueue.global(qos: .utility).async {
-            let r = run(cli, ["app", project], stdin: nil)
-            if r.code != 0 {
-                DispatchQueue.main.async {
-                    if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.t3tools.t3code") {
-                        NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration())
-                    }
-                }
+    private static func pressNewChat(app: NSRunningApplication?, deadline: Date) {
+        let front = NSWorkspace.shared.frontmostApplication
+        guard front?.bundleIdentifier == t3BundleID, app?.isFinishedLaunching != false else {
+            // Wait for T3 to launch (cold start) or take focus before sending the shortcut.
+            if Date() < deadline {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { pressNewChat(app: app, deadline: deadline) }
+            }
+            return
+        }
+        // A cold start needs a moment before the web view handles keys.
+        let delay: TimeInterval = (app?.launchDate.map { Date().timeIntervalSince($0) < 4 } ?? false) ? 1.5 : 0.08
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            let src = CGEventSource(stateID: .privateState)
+            let keyO: CGKeyCode = 31
+            for down in [true, false] {
+                guard let e = CGEvent(keyboardEventSource: src, virtualKey: keyO, keyDown: down) else { continue }
+                e.flags = [.maskCommand, .maskShift]
+                e.postToPid(front!.processIdentifier)
             }
         }
     }
