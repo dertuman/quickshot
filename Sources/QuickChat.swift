@@ -10,6 +10,8 @@ enum QuickChat {
     private static var flight: [NSWindow] = []
     private static var picker: QuickPicker?
     private static var chip: SentChip?
+    /// Where the last screenshot was pasted (T3 route), so a redirect can take it back out.
+    private static var placed: (route: String, target: ChatTarget)?
 
     static func trigger(pick: Bool = false) {
         guard !busy else { return }
@@ -53,8 +55,10 @@ enum QuickChat {
             picker = nil
             guard let target else { back?.activate(); return }
             busy = true
-            send(image, to: target, from: thumb ?? from, flash: false) { t3 in
-                if t3 != nil { showChip(image, sentTo: target, openPicker: false) }
+            unplace {
+                send(image, to: target, from: thumb ?? from, flash: false) { t3 in
+                    if t3 != nil { showChip(image, sentTo: target, openPicker: false) }
+                }
             }
         }
         picker = p
@@ -80,9 +84,40 @@ enum QuickChat {
         open(target) { app in t3 = app; group.leave() }
         group.notify(queue: .main) {
             busy = false
-            if let t3, let png { paste(png, into: t3) }
+            if let t3, let png {
+                paste(png, into: t3)
+                placed = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    if let route = T3AX.route(t3.processIdentifier) { placed = (route, target) }
+                }
+            }
             done(t3)
         }
+    }
+
+    /// Takes the screenshot back out of where it was pasted, so redirecting leaves no junk:
+    /// a new thread draft holding only the screenshot is then empty, and T3 drops it.
+    /// Goes back to an existing thread first if T3 has moved on; a draft it has moved on from
+    /// has no route back, so it is left as is.
+    private static func unplace(then next: @escaping () -> Void) {
+        guard let p = placed,
+              let t3 = NSRunningApplication.runningApplications(withBundleIdentifier: T3Sender.t3BundleID).first
+        else { next(); return }
+        placed = nil
+        let pid = t3.processIdentifier
+        if T3AX.route(pid) == p.route { T3AX.removeLastImage(pid); next(); return }
+        guard p.target.kind == .thread, let url = p.target.threadURL,
+              let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: T3Sender.t3BundleID)
+        else { next(); return }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = false
+        NSWorkspace.shared.open([url], withApplicationAt: app, configuration: config) { _, _ in }
+        func check(_ tries: Int) {
+            if T3AX.route(pid) == p.route { T3AX.removeLastImage(pid); next() }
+            else if tries == 0 { next() }
+            else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { check(tries - 1) } }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { check(15) }
     }
 
     // MARK: Capture
@@ -334,5 +369,49 @@ enum QuickChat {
             e.flags = flags
             e.postToPid(app.processIdentifier)
         }
+    }
+}
+
+/// T3 Code's web view through the accessibility tree (Electron exposes it on request).
+enum T3AX {
+    private static func element(_ pid: pid_t) -> AXUIElement {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        return app
+    }
+
+    private static func attr(_ e: AXUIElement, _ name: String) -> AnyObject? {
+        var v: AnyObject?
+        return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
+    }
+
+    private static func walk(_ e: AXUIElement, depth: Int = 0, _ visit: (AXUIElement, String) -> Bool) -> Bool {
+        guard depth < 80 else { return false }
+        if visit(e, attr(e, "AXRole") as? String ?? "") { return true }
+        for c in attr(e, "AXChildren") as? [AXUIElement] ?? [] where walk(c, depth: depth + 1, visit) { return true }
+        return false
+    }
+
+    /// The route T3 shows, e.g. "/draft/<id>" or "/<environment>/<thread>".
+    static func route(_ pid: pid_t) -> String? {
+        var route: String?
+        _ = walk(element(pid)) { e, role in
+            guard role == "AXWebArea" else { return false }
+            route = (attr(e, "AXURL") as? URL)?.fragment
+            return route != nil
+        }
+        return route
+    }
+
+    /// Presses the composer's last "Remove image…" button: the pasted screenshot is the newest.
+    @discardableResult
+    static func removeLastImage(_ pid: pid_t) -> Bool {
+        var last: AXUIElement?
+        _ = walk(element(pid)) { e, role in
+            if role == "AXButton", (attr(e, "AXDescription") as? String)?.hasPrefix("Remove image") == true { last = e }
+            return false
+        }
+        guard let last else { return false }
+        return AXUIElementPerformAction(last, kAXPressAction as CFString) == .success
     }
 }
