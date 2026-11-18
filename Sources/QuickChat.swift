@@ -13,6 +13,13 @@ enum QuickChat {
     /// Where the last screenshot was pasted (T3 route), so a redirect can take it back out.
     private static var placed: (route: String, target: ChatTarget)?
 
+    /// What both ⌘ captures: the whole screen under the pointer (default) or the front window.
+    enum Capture: String { case screen, window }
+    static var captureMode: Capture {
+        get { Capture(rawValue: UserDefaults.standard.string(forKey: "QuickChatCapture") ?? "") ?? .screen }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "QuickChatCapture") }
+    }
+
     static func trigger(pick: Bool = false) {
         guard !busy else { return }
         guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: T3Sender.t3BundleID) != nil else {
@@ -20,20 +27,27 @@ enum QuickChat {
         }
         busy = true
         chip?.close()
-        let front = NSWorkspace.shared.frontmostApplication
-        let windows = CaptureSession.onScreenAppWindows()
-        let source = windows.first(where: { $0.pid == front?.processIdentifier }) ?? windows.first
         let target = ChatTarget.standard
-        guard let source, CGPreflightScreenCaptureAccess() else {
-            send(nil, to: target, from: nil) { _ in }
-            return
-        }
-        capture(source) { image in
-            send(image, to: target, from: source.rect) { t3 in
+        let finish: (CGImage?, NSRect) -> Void = { image, rect in
+            send(image, to: target, from: rect) { t3 in
                 guard let image, t3 != nil else { return }
                 showChip(image, sentTo: target, openPicker: pick)
             }
         }
+        guard CGPreflightScreenCaptureAccess() else { send(nil, to: target, from: nil) { _ in }; return }
+        if captureMode == .screen {
+            let mouse = NSEvent.mouseLocation
+            let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.screens[0]
+            captureScreen(screen) { finish($0, screen.frame) }
+            return
+        }
+        let front = NSWorkspace.shared.frontmostApplication
+        let windows = CaptureSession.onScreenAppWindows()
+        guard let source = windows.first(where: { $0.pid == front?.processIdentifier }) ?? windows.first else {
+            send(nil, to: target, from: nil) { _ in }
+            return
+        }
+        capture(source) { finish($0, source.rect) }
     }
 
     private static func showChip(_ image: CGImage, sentTo target: ChatTarget, openPicker: Bool) {
@@ -134,6 +148,25 @@ enum QuickChat {
             cfg.height = Int(scWindow.frame.height * scale)
             cfg.showsCursor = false
             let filter = SCContentFilter(desktopIndependentWindow: scWindow)
+            SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg) { image, _ in
+                DispatchQueue.main.async { done(image) }
+            }
+        }
+    }
+
+    private static func captureScreen(_ screen: NSScreen, done: @escaping (CGImage?) -> Void) {
+        let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+        SCShareableContent.getExcludingDesktopWindows(false, onScreenWindowsOnly: true) { content, _ in
+            guard let content, let display = content.displays.first(where: { $0.displayID == id }) else {
+                DispatchQueue.main.async { done(nil) }
+                return
+            }
+            let me = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
+            let filter = SCContentFilter(display: display, excludingApplications: me, exceptingWindows: [])
+            let cfg = SCStreamConfiguration()
+            cfg.width = Int(CGFloat(display.width) * screen.backingScaleFactor)
+            cfg.height = Int(CGFloat(display.height) * screen.backingScaleFactor)
+            cfg.showsCursor = false
             SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg) { image, _ in
                 DispatchQueue.main.async { done(image) }
             }

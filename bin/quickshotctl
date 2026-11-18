@@ -7,7 +7,7 @@ def main():
     parser.add_argument('--timeout', type=float, default=45)
     commands = parser.add_subparsers(dest='command', required=True)
     for command in ('status', 'sources', 'stop'): commands.add_parser(command)
-    quick = commands.add_parser('quickchat'); quick.add_argument('--pick', action='store_true', default=None)
+    quick = commands.add_parser('quickchat'); quick.add_argument('--pick', action='store_true', default=None); quick.add_argument('--capture', choices=['screen','window'], help='set what both ⌘ captures from now on')
     marker = commands.add_parser('mark'); marker.add_argument('label')
     context = commands.add_parser('context'); context.add_argument('--app')
     start = commands.add_parser('start')

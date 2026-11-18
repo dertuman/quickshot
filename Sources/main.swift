@@ -2026,6 +2026,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKeyStatusItem: NSMenuItem?
     private var captureMenuItem: NSMenuItem?
     private var keepHistoryMenuItem: NSMenuItem?
+    private var quickChatCaptureItems: [NSMenuItem] = []
+
+    @objc private func setQuickChatCapture(_ sender: NSMenuItem) {
+        if let raw = sender.representedObject as? String, let mode = QuickChat.Capture(rawValue: raw) {
+            QuickChat.captureMode = mode
+        }
+    }
     private var hotKey: ChordHotKey?
     private var retryTimer: Timer?
     private var isRecording = false
@@ -2059,6 +2066,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keepItem.target = self
         menu.addItem(keepItem)
         keepHistoryMenuItem = keepItem
+        menu.addItem(.separator())
+        let both = NSMenuItem(title: "Both ⌘ to T3", action: nil, keyEquivalent: "")
+        both.isEnabled = false
+        menu.addItem(both)
+        for (title, mode) in [("Full Screen", QuickChat.Capture.screen), ("Front Window", .window)] {
+            let mi = NSMenuItem(title: title, action: #selector(setQuickChatCapture(_:)), keyEquivalent: "")
+            mi.target = self
+            mi.representedObject = mode.rawValue
+            mi.indentationLevel = 1
+            menu.addItem(mi)
+            quickChatCaptureItems.append(mi)
+        }
+        menu.addItem(.separator())
         let statusLine = NSMenuItem(title: "", action: #selector(openAccessibilitySettings),
                                     keyEquivalent: "")
         statusLine.target = self
@@ -2147,6 +2167,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         captureMenuItem?.title = isRecording ? "Stop Recording (fn+⌃)" : "Capture Area (fn+⌃)"
         keepHistoryMenuItem?.state = HistoryStore.shared.isEnabled ? .on : .off
+        for mi in quickChatCaptureItems {
+            mi.state = mi.representedObject as? String == QuickChat.captureMode.rawValue ? .on : .off
+        }
         if hotKey?.isActive == true {
             hotKeyStatusItem?.title = "Hotkey active"
             hotKeyStatusItem?.action = nil
