@@ -212,6 +212,25 @@ final class RecordingHUD: NSObject {
     }
 
     func show() { panel.orderFrontRegardless() }
+
+    /// Replaces the levels with a spinner the moment Stop is pressed, so it never looks stuck.
+    func showSaving() {
+        guard let content = panel.contentView else { return }
+        content.subviews.forEach { $0.removeFromSuperview() }
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.appearance = NSAppearance(named: .darkAqua)
+        spinner.startAnimation(nil)
+        let label = NSTextField(labelWithString: "Saving…")
+        label.textColor = .white
+        let stack = NSStackView(views: [spinner, label])
+        stack.spacing = 8
+        let fit = stack.fittingSize
+        stack.frame = NSRect(x: (content.bounds.width - fit.width) / 2, y: (content.bounds.height - fit.height) / 2,
+                             width: fit.width, height: fit.height)
+        content.addSubview(stack)
+    }
     func close() { panel.orderOut(nil) }
 
     /// Called on the main thread; the meter falls back gently so speech reads as a steady bar.

@@ -1487,7 +1487,7 @@ final class RecordingBorderView: NSView {
 }
 
 @available(macOS 15.0, *)
-final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDelegate, SCStreamOutput {
+final class RecordingSession: NSObject, SCStreamDelegate, SCStreamOutput {
     static var current: RecordingSession?
 
     private let displayID: CGDirectDisplayID
@@ -1496,17 +1496,18 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
     private let borderWindow: NSWindow
     private let fileURL: URL
     private var stream: SCStream?
-    private var recordingOutput: SCRecordingOutput?
+    private var writer: RecordingWriter?
     private var stopping = false
     private var finalized = false
     private var startedAt: Date?
+    private var stoppedAt: Date?
     private var controlReply: (([String: Any]) -> Void)?
     var controlStops: [([String: Any]) -> Void] = []
     private var markers: [[String: Any]] = []
     private var automated = false
     private let audio: AudioChoice
     private var hud: RecordingHUD?
-    private let meterQueue = DispatchQueue(label: "quickshot.meter")
+    private let sampleQueue = DispatchQueue(label: "quickshot.samples")
 
     var controlStatus: [String: Any] {
         ["state": finalized ? "finished" : (stopping ? "stopping" : (startedAt == nil ? "starting" : "recording")),
@@ -1590,20 +1591,13 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
                 let me = content?.applications.filter { $0.processID == getpid() } ?? []
                 let filter = SCContentFilter(display: display, excludingApplications: me, exceptingWindows: [])
 
-                let recCfg = SCRecordingOutputConfiguration()
-                recCfg.outputURL = self.fileURL
-                recCfg.outputFileType = .mp4
-                recCfg.videoCodecType = .h264
-                let output = SCRecordingOutput(configuration: recCfg, delegate: self)
-
+                self.writer = try RecordingWriter(url: self.fileURL, size: self.pixelSize,
+                                                  system: self.audio.system, mic: self.audio.mic != nil)
                 let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
-                try stream.addRecordingOutput(output)
-                if self.hud != nil {
-                    if self.audio.system { try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: self.meterQueue) }
-                    if self.audio.mic != nil { try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: self.meterQueue) }
-                }
+                try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: self.sampleQueue)
+                if self.audio.system { try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: self.sampleQueue) }
+                if self.audio.mic != nil { try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: self.sampleQueue) }
                 self.stream = stream
-                self.recordingOutput = output
                 stream.startCapture { err in
                     DispatchQueue.main.async {
                         if let err { self.fail(err) } else { self.didStart() }
@@ -1625,25 +1619,30 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        if stopping { return }
+        writer?.append(sampleBuffer, type: type)
+        guard type != .screen, hud != nil else { return }
         let level = RecordingAudio.level(sampleBuffer)
         DispatchQueue.main.async { self.hud?.update(type, level: level) }
     }
 
     func stop() {
-        guard !stopping else { return }
+        guard !stopping, startedAt != nil else { return }
         stopping = true
+        stoppedAt = Date()
+        borderWindow.orderOut(nil)
+        hud?.showSaving()
+        AppDelegate.shared?.setRecording(false)
         stream?.stopCapture { error in
-            if let error { DispatchQueue.main.async { self.fail(error) } }
-            // Only SCRecordingOutput's finalization callback confirms a complete MP4.
+            self.sampleQueue.async {
+                guard let writer = self.writer else { return }
+                writer.finish { writeError in
+                    DispatchQueue.main.async {
+                        if let e = writeError ?? error { self.fail(e) } else { self.finishRecording() }
+                    }
+                }
+            }
         }
-    }
-
-    func recordingOutputDidFinishRecording(_ recordingOutput: SCRecordingOutput) {
-        DispatchQueue.main.async { self.finishRecording() }
-    }
-
-    func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
-        DispatchQueue.main.async { self.fail(error) }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -1666,7 +1665,7 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
             return
         }
         let result: [String: Any] = ["ok": true, "state": "finished", "path": fileURL.path,
-            "duration": startedAt.map { Date().timeIntervalSince($0) } ?? 0, "markers": markers]
+            "duration": startedAt.map { (stoppedAt ?? Date()).timeIntervalSince($0) } ?? 0, "markers": markers]
         if let data = try? JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: URL(fileURLWithPath: fileURL.path + ".markers.json"), options: .atomic)
         }
