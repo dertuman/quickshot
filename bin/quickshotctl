@@ -17,6 +17,8 @@ def main():
     start.add_argument('--rect', type=float, nargs=4, metavar=('X','Y','WIDTH','HEIGHT'))
     start.add_argument('--insets', type=float, nargs=4, default=[0,0,0,0], metavar=('TOP','RIGHT','BOTTOM','LEFT'))
     start.add_argument('--output', required=True)
+    start.add_argument('--mic', help="record a microphone: 'default', its name or its ID")
+    start.add_argument('--system-audio', dest='systemAudio', action='store_true', default=None, help='record sound playing on the Mac')
     args = vars(parser.parse_args()); timeout = args.pop('timeout')
     if not 0 < timeout <= 300: parser.error('timeout must be between 0 and 300 seconds')
     if args['command'] == 'start':

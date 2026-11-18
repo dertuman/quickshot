@@ -22,6 +22,8 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>QuickShot records your microphone with a screen recording when you pick one in the Record toolbar.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>QuickShot captures the screen region you select so you can annotate it.</string>
 </dict>

@@ -617,7 +617,12 @@ final class OverlayView: NSView {
             b.controlSize = .regular
         }
 
-        let stack = NSStackView(views: [control, undoButton, recordButton, t3Button, copyButton, saveButton, cancelButton])
+        let micPopup = RecordingAudio.micPopup(target: self, action: #selector(micChanged(_:)))
+        let systemPopup = RecordingAudio.systemPopup(target: self, action: #selector(systemAudioChanged(_:)))
+        let recordGroup = NSStackView(views: [recordButton, micPopup, systemPopup])
+        recordGroup.spacing = 4
+
+        let stack = NSStackView(views: [control, undoButton, recordGroup, t3Button, copyButton, saveButton, cancelButton])
         stack.orientation = .horizontal
         stack.spacing = 8
         let fit = stack.fittingSize
@@ -658,6 +663,14 @@ final class OverlayView: NSView {
 
     @objc private func undoPressed() { undoAnnotation(); window?.makeFirstResponder(self) }
     @objc private func recordPressed() { session?.startRecording(from: self) }
+    @objc private func micChanged(_ sender: NSPopUpButton) {
+        RecordingAudio.choose(micFrom: sender) { session?.dismiss() }
+        window?.makeFirstResponder(self)
+    }
+    @objc private func systemAudioChanged(_ sender: NSPopUpButton) {
+        RecordingAudio.systemAudio = sender.indexOfSelectedItem == 1
+        window?.makeFirstResponder(self)
+    }
     @objc private func copyPressed() { session?.copyAndFinish(from: self) }
     @objc private func savePressed() { session?.saveAndFinish(from: self) }
     @objc private func t3Pressed() { session?.sendToT3(from: self) }
@@ -1474,7 +1487,7 @@ final class RecordingBorderView: NSView {
 }
 
 @available(macOS 15.0, *)
-final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDelegate {
+final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDelegate, SCStreamOutput {
     static var current: RecordingSession?
 
     private let displayID: CGDirectDisplayID
@@ -1491,11 +1504,14 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
     var controlStops: [([String: Any]) -> Void] = []
     private var markers: [[String: Any]] = []
     private var automated = false
+    private let audio: AudioChoice
+    private var hud: RecordingHUD?
+    private let meterQueue = DispatchQueue(label: "quickshot.meter")
 
     var controlStatus: [String: Any] {
         ["state": finalized ? "finished" : (stopping ? "stopping" : (startedAt == nil ? "starting" : "recording")),
          "path": fileURL.path, "elapsed": startedAt.map { Date().timeIntervalSince($0) } ?? 0,
-         "markers": markers]
+         "markers": markers, "microphone": audio.mic?.localizedName ?? NSNull(), "systemAudio": audio.system]
     }
 
     func mark(_ label: String) -> [String: Any] {
@@ -1506,18 +1522,21 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
 
     static func begin(displayID: CGDirectDisplayID, sourceRect: CGRect,
                       pixelSize: CGSize, globalRegion: NSRect, output: URL? = nil,
+                      audio: AudioChoice = .none,
                       controlReply: (([String: Any]) -> Void)? = nil) {
         guard current == nil else { return }
         let session = RecordingSession(displayID: displayID, sourceRect: sourceRect,
-                                       pixelSize: pixelSize, globalRegion: globalRegion, output: output, controlReply: controlReply)
+                                       pixelSize: pixelSize, globalRegion: globalRegion, output: output,
+                                       audio: audio, controlReply: controlReply)
         current = session
         session.start()
     }
 
     private init(displayID: CGDirectDisplayID, sourceRect: CGRect,
                  pixelSize: CGSize, globalRegion: NSRect, output: URL?,
-                 controlReply: (([String: Any]) -> Void)?) {
+                 audio: AudioChoice, controlReply: (([String: Any]) -> Void)?) {
         self.displayID = displayID
+        self.audio = audio
         self.sourceRect = sourceRect
         self.pixelSize = pixelSize
 
@@ -1543,6 +1562,9 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
         borderWindow.animationBehavior = .none
         borderWindow.contentView = RecordingBorderView()
         super.init()
+        if !automated {
+            hud = RecordingHUD(region: globalRegion, audio: audio) { [weak self] in self?.stop() }
+        }
     }
 
     private func start() {
@@ -1558,7 +1580,15 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
                 cfg.height = Int(self.pixelSize.height)
                 cfg.minimumFrameInterval = CMTime(value: 1, timescale: 60)
                 cfg.showsCursor = true
-                let filter = SCContentFilter(display: display, excludingWindows: [])
+                cfg.capturesAudio = self.audio.system
+                cfg.excludesCurrentProcessAudio = true
+                if let mic = self.audio.mic {
+                    cfg.captureMicrophone = true
+                    cfg.microphoneCaptureDeviceID = mic.uniqueID
+                }
+                // Leave out QuickShot's own windows (the recording controls) wherever they sit.
+                let me = content?.applications.filter { $0.processID == getpid() } ?? []
+                let filter = SCContentFilter(display: display, excludingApplications: me, exceptingWindows: [])
 
                 let recCfg = SCRecordingOutputConfiguration()
                 recCfg.outputURL = self.fileURL
@@ -1568,6 +1598,10 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
 
                 let stream = SCStream(filter: filter, configuration: cfg, delegate: self)
                 try stream.addRecordingOutput(output)
+                if self.hud != nil {
+                    if self.audio.system { try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: self.meterQueue) }
+                    if self.audio.mic != nil { try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: self.meterQueue) }
+                }
                 self.stream = stream
                 self.recordingOutput = output
                 stream.startCapture { err in
@@ -1586,7 +1620,13 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
         controlReply?(["ok": true, "state": "recording", "path": fileURL.path])
         controlReply = nil
         borderWindow.orderFrontRegardless()
+        hud?.show()
         AppDelegate.shared?.setRecording(true)
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        let level = RecordingAudio.level(sampleBuffer)
+        DispatchQueue.main.async { self.hud?.update(type, level: level) }
     }
 
     func stop() {
@@ -1616,6 +1656,7 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
         guard !finalized else { return }
         finalized = true
         borderWindow.orderOut(nil)
+        hud?.close()
         AppDelegate.shared?.setRecording(false)
         RecordingSession.current = nil
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
@@ -1646,6 +1687,7 @@ final class RecordingSession: NSObject, SCStreamDelegate, SCRecordingOutputDeleg
         finalized = true
         stream?.stopCapture { _ in }
         borderWindow.orderOut(nil)
+        hud?.close()
         AppDelegate.shared?.setRecording(false)
         RecordingSession.current = nil
         let result: [String: Any] = ["ok": false, "state": "failed", "error": error?.localizedDescription ?? "Unknown error"]
@@ -1873,7 +1915,7 @@ final class CaptureSession {
         dismiss()
         RecordingSession.begin(displayID: displayID, sourceRect: sourceRect,
                                pixelSize: CGSize(width: pw, height: ph),
-                               globalRegion: globalRegion)
+                               globalRegion: globalRegion, audio: RecordingAudio.saved)
     }
 
     func saveAndFinish(from view: OverlayView) {

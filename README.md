@@ -30,7 +30,8 @@ Prefer building from source? `git clone https://github.com/dertuman/quickshot &&
 - **Both ⌘ keys** (left and right together), from anywhere: the screen under the pointer (or the front window, set in the menu bar menu under Both ⌘ to T3) is screenshotted and flies straight into T3 Code, attached in the composer of your default target (a new thread in Home to start with), ready for your prompt. No questions first. A chip then shows bottom right where it went: click it to send the same screenshot to a new thread in another project or to an existing thread (type to filter, ↵ to send), or press ⌘D there to make the highlighted target the default for every later screenshot. Sending it elsewhere takes it back out of the first target, so no empty draft is left. `quickshotctl quickchat [--pick] [--capture screen|window]` does the same.
 - **While recording**, the menu bar icon shows the elapsed time. Click it (or press fn+⌃) to stop.
 - **History** keeps your last 100 captures (screenshots and recordings). Open **History…** from the menu bar icon, click any shot to preview it, and hit **Copy** (or ⏎, or double-click) to put it back on your clipboard, ready to paste anywhere. Toggle **Keep History** in the menu to turn it off; nothing is stored while it's off.
-- **Record** (or R) records the selected region instead: a thin red border marks it, the menu bar icon becomes a red stop button, and fn+⌃ (or clicking it) stops. The MP4 lands on your Desktop with the file already on your clipboard, ready to paste into Slack or wherever. 60 fps, H.264, no audio, tiny files.
+- **Record** (or R) records the selected region instead: a thin red border marks it, the menu bar icon becomes a red stop button, and fn+⌃ (or clicking it) stops. The MP4 lands on your Desktop with the file already on your clipboard, ready to paste into Slack or wherever. 60 fps, H.264, tiny files.
+- **Audio** sits next to Record: pick a microphone and turn computer audio on or off. Both are remembered and mixed into one track. While recording, a small bar under the region shows a live level for each source and a Stop button (QuickShot's own windows never appear in the video).
 
 Keyboard while the overlay is up:
 
@@ -92,7 +93,7 @@ insets. Alternatively use `--display ID --rect X Y WIDTH HEIGHT`, in display-loc
 top-left coordinates. The whole region must fit one display.
 
 This records the visible **display region**, so keep the intended window in place
-and unobscured until `stop`. It captures the cursor but no audio. Automatic
+and unobscured until `stop`. It captures the cursor. Audio is off unless you add `--mic default` (or a mic name) and/or `--system-audio`. Automatic
 recordings do not change the clipboard, open Finder, or add to capture history.
 Manual selection and recording retain their existing behavior.
 

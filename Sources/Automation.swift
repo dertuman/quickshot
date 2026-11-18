@@ -1,5 +1,6 @@
 import Cocoa
 import ScreenCaptureKit
+import AVFoundation
 
 // Same-user file mailbox: no network listener, no remote access, no permission bypass.
 // Requests expire so a timed-out client cannot unexpectedly begin recording later.
@@ -144,7 +145,19 @@ final class AutomationControl {
                             width: region.width, height: region.height)
         RecordingSession.begin(displayID: display.displayID, sourceRect: region,
             pixelSize: CGSize(width: max(2, Int(region.width * scale) & ~1), height: max(2, Int(region.height * scale) & ~1)),
-            globalRegion: global, output: output, controlReply: reply)
+            globalRegion: global, output: output, audio: try Self.audio(r), controlReply: reply)
+    }
+
+    /// Automatic recordings are silent unless the request asks for audio, so the user's mic never turns on by surprise.
+    private static func audio(_ r: [String: Any]) throws -> AudioChoice {
+        var choice = AudioChoice(mic: nil, system: r["systemAudio"] as? Bool ?? false)
+        if let id = r["mic"] as? String {
+            guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { throw ControlError("Grant QuickShot Microphone access in System Settings first (pick a mic in the Record toolbar once)") }
+            let device = id == "default" ? AVCaptureDevice.default(for: .audio) : RecordingAudio.microphones.first { $0.uniqueID == id || $0.localizedName == id }
+            guard let device else { throw ControlError("Microphone not found: \(id)") }
+            choice.mic = device
+        }
+        return choice
     }
 }
 
